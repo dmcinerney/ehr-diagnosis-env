@@ -23,3 +23,7 @@ Reward function for one timestep =
 TODO: Add support for fuzzy word matching when computing reward
 
 TODO: Add support for entering custom diagnoses/weights as part of the evidence retrieval action to append to the automatically extracted ones
+
+TODO: Add dummy data for example.
+
+TODO: Add example code for preprocessing mimic into the correct format and allow use of this in example.
