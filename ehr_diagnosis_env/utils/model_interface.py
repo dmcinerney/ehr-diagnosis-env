@@ -1,5 +1,4 @@
 from transformers import T5Tokenizer, T5ForConditionalGeneration
-import streamlit as st
 import torch
 
 
@@ -51,7 +50,7 @@ class T5(ModelInterface):
 
 
 def get_model_interface(model_name):
-    if model_name == 'google/flan-t5-xxl':
+    if model_name == 'google/flan-t5-xxl' or model_name == 'google/flan-t5-xl':
         return T5(model_name)
     else:
         raise NotImplementedError

@@ -2,7 +2,8 @@
 A gym environment for diagnosis that uses information extracted EHRs as observations.
 
 Pseudo-code:
-```Step 1: extract risk factors/differential diagnoses from all reports, extract confident diagnoses from all reports
+```
+Step 1: extract risk factors/differential diagnoses from all reports, extract confident diagnoses from all reports
 
 Step 2: episode rollout:
 	For each report in sequential order:
@@ -18,3 +19,7 @@ Reward function for one timestep =
 			1/rank if in future diagnoses (do some fuzzy matching, maybe thresholded cosine sim)
 		}
 ```
+
+TODO: Add support for fuzzy word matching when computing reward
+
+TODO: Add support for entering custom diagnoses/weights as part of the evidence retrieval action to append to the automatically extracted ones
