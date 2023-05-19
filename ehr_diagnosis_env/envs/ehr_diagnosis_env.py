@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer, util
 
 
 class EHRDiagnosisEnv(gym.Env):
-    def __init__(self, instances, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.75):
+    def __init__(self, instances=None, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.75):
         """
         :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
             dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
@@ -90,7 +90,11 @@ class EHRDiagnosisEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self._all_reports = pd.read_csv(io.StringIO(self._all_instances.sample(n=1).iloc[0].reports))
+        if options is not None and 'reports' in options.keys():
+            self._all_reports = options['reports']
+        else:
+            assert self._all_instances is not None
+            self._all_reports = pd.read_csv(io.StringIO(self._all_instances.sample(n=1).iloc[0].reports))
         self._extracted_information, self._current_targets = self.extract_info(self._all_reports)
         self._current_report_index = 0
         self._evidence_is_retrieved = False
