@@ -5,7 +5,8 @@ import io
 import time
 
 
-instance_num = 1
+instance_num = 0
+# instance_num = 1
 instances = pd.read_csv(
     '/work/frink/mcinerney.de/datasets/mimic-iii/physionet.org/files/mimiciii/1.4/preprocessed/reports_and_codes3/val.data',
     compression='gzip')

@@ -5,10 +5,11 @@ from tqdm import tqdm
 import pandas as pd
 import io
 import string
+from sentence_transformers import SentenceTransformer, util
 
 
 class EHRDiagnosisEnv(gym.Env):
-    def __init__(self, instances, top_k_evidence=3, model_name='google/flan-t5-xxl'):
+    def __init__(self, instances, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.75):
         """
         :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
             dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
@@ -16,6 +17,8 @@ class EHRDiagnosisEnv(gym.Env):
         """
         self._all_instances = instances
         self.top_k_evidence = top_k_evidence
+        self.model_name = model_name
+        self.fuzzy_matching_threshold = fuzzy_matching_threshold
 
         self.seed = None
         self.action_space = spaces.Box(low=-float('inf'), high=float('inf'))
@@ -48,6 +51,9 @@ class EHRDiagnosisEnv(gym.Env):
         self._current_targets = None
         print('loading model interface')
         self.model = get_model_interface(model_name)
+        self.fuzzy_matching_model = None
+        if self.fuzzy_matching_threshold is not None:
+            self.fuzzy_matching_model = SentenceTransformer('all-MiniLM-L6-v2')
 
     def extract_info(self, reports):
         extracted_information = {
@@ -142,6 +148,19 @@ class EHRDiagnosisEnv(gym.Env):
             for diagnosis, evidence in zip(diagnoses_to_query_temp2, out['output']):
                 self._current_evidence[diagnosis][i] = evidence
 
+    def is_match(self, x, ys):
+        if self.fuzzy_matching_threshold is not None:
+            ys = list(ys)
+            embeddings = self.fuzzy_matching_model.encode([x] + ys, convert_to_tensor=True)
+            cosine_scores = util.cos_sim(embeddings[:1], embeddings[1:])
+            index = cosine_scores[0].argmax().item()
+            if cosine_scores[0, index] > self.fuzzy_matching_threshold:
+                return True, ys[index]
+            else:
+                return False, None
+        else:
+            return x in ys, x
+
     def step(self, action):
         info = {'max_timesteps': len(self._all_reports) * 2}
         assert self._current_report_index < len(self._all_reports)
@@ -156,9 +175,10 @@ class EHRDiagnosisEnv(gym.Env):
             reward = 0
             true_positives = []
             for j, risk in enumerate(self._current_potential_diagnoses):
-                if risk in self._current_targets:
+                is_match, best_match = self.is_match(risk, self._current_targets)
+                if is_match:
                     reward += 1 / (j + 1)
-                    true_positives.append((risk, j + 1))
+                    true_positives.append((risk, best_match, j + 1))
             info['true_positives'] = true_positives
             self._current_report_index += 1
             self._evidence_is_retrieved = False
