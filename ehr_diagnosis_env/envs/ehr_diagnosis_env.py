@@ -2,6 +2,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from ehr_diagnosis_env.utils import *
 from tqdm import tqdm
+import numpy as np
 import pandas as pd
 import io
 import string
@@ -9,7 +10,8 @@ from sentence_transformers import SentenceTransformer, util
 
 
 class EHRDiagnosisEnv(gym.Env):
-    def __init__(self, instances=None, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.75):
+    def __init__(self, instances=None, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.75,
+                 progress_bar=None):
         """
         :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
             dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
@@ -19,6 +21,7 @@ class EHRDiagnosisEnv(gym.Env):
         self.top_k_evidence = top_k_evidence
         self.model_name = model_name
         self.fuzzy_matching_threshold = fuzzy_matching_threshold
+        self.progress_bar = progress_bar
 
         self.seed = None
         self.action_space = spaces.Box(low=-float('inf'), high=float('inf'))
@@ -48,6 +51,7 @@ class EHRDiagnosisEnv(gym.Env):
 
         self._all_reports = None
         self._extracted_information = None
+        self._extracted_information_cache = {}
         self._current_targets = None
         print('loading model interface')
         self.model = get_model_interface(model_name)
@@ -55,13 +59,18 @@ class EHRDiagnosisEnv(gym.Env):
         if self.fuzzy_matching_threshold is not None:
             self.fuzzy_matching_model = SentenceTransformer('all-MiniLM-L6-v2')
 
+    def set_instances(self, instances):
+        self._all_instances = instances
+        self._extracted_information_cache = {}
+
     def extract_info(self, reports):
         extracted_information = {
             'differential diagnoses': [],
             'risk prediction': [],
             'confident diagnoses': [],
         }
-        for i, row in tqdm(reports.iterrows(), total=len(reports), desc='extracting information from reports'):
+        for i, row in self.progress_bar(
+                reports.iterrows(), total=len(reports), desc='extracting information from reports'):
             first_queries = ['differential diagnoses', 'risk prediction', 'confident diagnosis exists']
             out = self.model.query(
                 tuple(row.text for _ in range(len(first_queries))),
@@ -92,10 +101,17 @@ class EHRDiagnosisEnv(gym.Env):
         super().reset(seed=seed)
         if options is not None and 'reports' in options.keys():
             self._all_reports = options['reports']
+            self._extracted_information, self._current_targets = self.extract_info(self._all_reports)
         else:
             assert self._all_instances is not None
-            self._all_reports = pd.read_csv(io.StringIO(self._all_instances.sample(n=1).iloc[0].reports))
-        self._extracted_information, self._current_targets = self.extract_info(self._all_reports)
+            index = options['instance_index'] if options is not None and 'instance_index' in options.keys() else \
+                np.random.randint(len(self._all_instances))
+            self._all_reports = pd.read_csv(io.StringIO(self._all_instances.iloc[index].reports))
+            # if indexing into the stored instances use a cache to prevent lots of extraction calls when resetting an
+            # environment to a previously seen instance
+            if index not in self._extracted_information_cache.keys():
+                self._extracted_information_cache[index] = self.extract_info(self._all_reports)
+            self._extracted_information, self._current_targets = self._extracted_information_cache[index]
         self._current_report_index = 0
         self._evidence_is_retrieved = False
         # start off with the extractions from the first note
@@ -122,7 +138,7 @@ class EHRDiagnosisEnv(gym.Env):
         for diagnosis in diagnoses_to_query:
             if diagnosis not in self._current_evidence.keys():
                 self._current_evidence[diagnosis] = {}
-        for i, report_row in tqdm(
+        for i, report_row in self.progress_bar(
                 self._all_reports[:self._current_report_index + 1].iterrows(),
                 total=self._current_report_index + 1):
             text = report_row.text
