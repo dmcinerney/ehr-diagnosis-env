@@ -8,6 +8,9 @@ class ModelInterface:
         self.tokenizer = self.get_tokenizer(model_name)
         self.model = self.get_model(model_name)
 
+    def to(self, device):
+        self.model.to(device)
+
     def get_tokenizer(self, model_name):
         raise NotImplementedError
 

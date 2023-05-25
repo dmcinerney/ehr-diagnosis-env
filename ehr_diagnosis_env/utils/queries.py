@@ -68,9 +68,12 @@ Answer: """,
 }
 
 
-def process_string_output(output):
+def process_string_output(output, needs_letters=True):
     # strip, lowercase, delete all non-alphanumeric characters, and standardize all whitespaces
-    return ' '.join(re.sub('[\W_]+', ' ', output.strip().lower()).split())
+    new_output = ' '.join(re.sub('[\W_]+', ' ', output.strip().lower()).split())
+    if needs_letters:
+        new_output = '' if re.search('[a-zA-Z]', new_output) is None else new_output
+    return new_output
 
 
 def process_set_output(output):

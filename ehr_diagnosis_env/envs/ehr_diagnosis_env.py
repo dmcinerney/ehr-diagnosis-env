@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer, util
 
 class EHRDiagnosisEnv(gym.Env):
     def __init__(self, instances=None, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.75,
-                 progress_bar=None):
+                 progress_bar=None, continuous_reward=True):
         """
         :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
             dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
@@ -22,6 +22,7 @@ class EHRDiagnosisEnv(gym.Env):
         self.model_name = model_name
         self.fuzzy_matching_threshold = fuzzy_matching_threshold
         self.progress_bar = progress_bar
+        self.continuous_reward = continuous_reward
 
         self.seed = None
         self.action_space = spaces.Box(low=-float('inf'), high=float('inf'))
@@ -33,11 +34,17 @@ class EHRDiagnosisEnv(gym.Env):
                 "potential_diagnoses": spaces.Text(10000, charset=string.printable),
                 # evidence extracted from previous reports for each diagnosis in csv format
                 "evidence": spaces.Text(10000, charset=string.printable),
+                # whether the evidence for this report was retrieved (determines what kind of action you are taking)
+                "evidence_is_retrieved": spaces.Discrete(2),
             }
         )
 
         # denotes the index of the currently observed note, leave to the reset method to set this
         self._current_report_index = None
+
+        # denotes the report index at which observations start
+        # (reports before this index are never directly shown to the agent but are used during evidence retrieval)
+        self._start_report_index = None
 
         # denotes if the action for evidence retrieval has been taken for the currently observed note,
         # leave to the reset method to set this
@@ -58,6 +65,10 @@ class EHRDiagnosisEnv(gym.Env):
         self.fuzzy_matching_model = None
         if self.fuzzy_matching_threshold is not None:
             self.fuzzy_matching_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+    def to(self, device):
+        self.model.to(device)
+        self.fuzzy_matching_model.to(device)
 
     def set_instances(self, instances):
         self._all_instances = instances
@@ -91,43 +102,56 @@ class EHRDiagnosisEnv(gym.Env):
         return extracted_information, current_targets
 
     def _get_obs(self):
+        observed_reports = self._all_reports[self._start_report_index:self._current_report_index + 1]
+        evidence = pd.DataFrame(self._current_evidence)
         return {
-            "reports": self._all_reports[:self._current_report_index + 1].to_csv(index=False),
+            "reports": observed_reports.to_csv(index=False),
             "potential_diagnoses": pd.DataFrame({'diagnoses': self._current_potential_diagnoses}).to_csv(index=False),
-            "evidence": pd.DataFrame(self._current_evidence).to_csv(index=False),
+            "evidence": evidence.to_csv(index=False),
+            "evidence_is_retrieved": self._evidence_is_retrieved,
         }
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if options is not None and 'reports' in options.keys():
             self._all_reports = options['reports']
+            self._all_reports['date'] = pd.to_datetime(self._all_reports['date'])
             self._extracted_information, self._current_targets = self.extract_info(self._all_reports)
         else:
             assert self._all_instances is not None
             index = options['instance_index'] if options is not None and 'instance_index' in options.keys() else \
                 np.random.randint(len(self._all_instances))
-            self._all_reports = pd.read_csv(io.StringIO(self._all_instances.iloc[index].reports))
+            self._all_reports = pd.read_csv(io.StringIO(self._all_instances.iloc[index].reports), parse_dates=['date'])
+            if options is not None and 'max_reports_considered' in options.keys():
+                self._all_reports = self._all_reports[:options['max_reports_considered']]
             # if indexing into the stored instances use a cache to prevent lots of extraction calls when resetting an
             # environment to a previously seen instance
             if index not in self._extracted_information_cache.keys():
                 self._extracted_information_cache[index] = self.extract_info(self._all_reports)
             self._extracted_information, self._current_targets = self._extracted_information_cache[index]
-        self._current_report_index = 0
-        self._evidence_is_retrieved = False
-        # start off with the extractions from the first note
-        self._current_potential_diagnoses = sorted(list(set().union(
-            self._extracted_information['differential diagnoses'][self._current_report_index],
-            self._extracted_information['risk prediction'][self._current_report_index])))
-        self.action_space = spaces.Box(
-            low=-float('inf'), high=float('inf'), shape=(len(self._current_potential_diagnoses),))
         # start off with no evidence
         self._current_evidence = {}
-        # delete the known confident diagnoses given the first report from the targets
-        self._current_targets = self._current_targets.difference(
-            self._extracted_information['confident diagnoses'][self._current_report_index])
+        # TODO: allow one to start the sequence from later on in the ehr
+        self._current_report_index = -1
+        self._start_report_index = -1
+        self._evidence_is_retrieved = False
+        # go to the first note with a nonzero number of potential diagnoses
+        self._current_potential_diagnoses = []
+        while len(self._current_potential_diagnoses) == 0:
+            self._current_report_index += 1
+            self._start_report_index += 1
+            self._current_potential_diagnoses = sorted(list(set(self._current_potential_diagnoses).union(
+                self._extracted_information['differential diagnoses'][self._current_report_index],
+                self._extracted_information['risk prediction'][self._current_report_index])))
+            self.action_space = spaces.Box(
+                low=-float('inf'), high=float('inf'), shape=(len(self._current_potential_diagnoses),))
+            # delete the known confident diagnoses given the report from the targets
+            self._current_targets = self._current_targets.difference(
+                self._extracted_information['confident diagnoses'][self._current_report_index])
         observation = self._get_obs()
-        info = {'max_timesteps': len(self._all_reports) * 2, 'current_targets': self._current_targets,
-                'current_report': 0, 'evidence_is_retrieved': False}
+        info = {'max_timesteps': (len(self._all_reports) - self._current_report_index) * 2,
+                'current_targets': self._current_targets,
+                'current_report': self._current_report_index}
         if len(self._current_targets) == 0:
             print('Environment is dead because there were no extracted targets. '
                   'You can either monitor for this by checking the length of the current targets in info, or '
@@ -138,9 +162,13 @@ class EHRDiagnosisEnv(gym.Env):
         for diagnosis in diagnoses_to_query:
             if diagnosis not in self._current_evidence.keys():
                 self._current_evidence[diagnosis] = {}
+        if 'day' not in self._current_evidence.keys():
+            self._current_evidence['day'] = {}
         for i, report_row in self.progress_bar(
                 self._all_reports[:self._current_report_index + 1].iterrows(),
                 total=self._current_report_index + 1):
+            self._current_evidence['day'][i] = (
+                report_row.date - self._all_reports.iloc[self._start_report_index].date).days
             text = report_row.text
             # only query ones that have been queried before on this report
             diagnoses_to_query_temp = [x for x in diagnoses_to_query if i not in self._current_evidence[x].keys()]
@@ -182,22 +210,26 @@ class EHRDiagnosisEnv(gym.Env):
             return x in ys, x
 
     def step(self, action):
-        info = {'max_timesteps': len(self._all_reports) * 2}
+        info = {'max_timesteps': (len(self._all_reports) - self._current_report_index) * 2}
         assert self._current_report_index < len(self._all_reports)
-        self._current_potential_diagnoses = sort_by_scores(self._current_potential_diagnoses, action)
         if not self._evidence_is_retrieved:
+            self._current_potential_diagnoses = sort_by_scores(self._current_potential_diagnoses, action)
             diagnoses_to_query = self._current_potential_diagnoses[:self.top_k_evidence]
             self._update_evidence(diagnoses_to_query)
             reward = 0
             terminated = False
             self._evidence_is_retrieved = True
         else:
+            if self.continuous_reward:
+                normalized_action = action / action.sum()
+            else:
+                self._current_potential_diagnoses = sort_by_scores(self._current_potential_diagnoses, action)
             reward = 0
             true_positives = []
             for j, risk in enumerate(self._current_potential_diagnoses):
                 is_match, best_match = self.is_match(risk, self._current_targets)
                 if is_match:
-                    reward += 1 / (j + 1)
+                    reward += normalized_action[j] if self.continuous_reward else 1 / (j + 1)
                     true_positives.append((risk, best_match, j + 1))
             info['true_positives'] = true_positives
             self._current_report_index += 1
@@ -215,6 +247,5 @@ class EHRDiagnosisEnv(gym.Env):
         observation = self._get_obs()
         info['current_targets'] = self._current_targets
         info['current_report'] = self._current_report_index
-        info['evidence_is_retrieved'] = self._evidence_is_retrieved
         truncated = len(self._current_targets) == 0
         return observation, reward, terminated, truncated, info
