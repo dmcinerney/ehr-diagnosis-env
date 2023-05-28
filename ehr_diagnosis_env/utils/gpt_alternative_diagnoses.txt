@@ -1,0 +1,70 @@
+diagnosis	alternatives
+atrioventricular block	sick sinus syndrome, myocardial infarction, cardiomyopathy, lyme disease, hyperkalemia, medication toxicity.
+portal vein thrombosis	cirrhosis, liver cancer, pancreatitis, inflammatory bowel disease.
+diastolic heart failure	hypertensive heart disease, valvular heart disease, restrictive cardiomyopathy, constrictive pericarditis.
+celiac artery compression syndrome	median arcuate ligament syndrome, pancreatic cancer, gastroduodenal artery aneurysm, peptic ulcer disease, aortic dissection.
+esophageal cancer	barrett's esophagus, gastroesophageal reflux disease (gerd), hiatal hernia, esophageal stricture, achalasia.
+myocardial infarction	some alternative diagnoses of myocardial infarction include pulmonary embolism, aortic dissection, gastritis, and musculoskeletal chest pain.
+brain cancer	migraine, concussion, meningitis, stroke, brain abscess, encephalitis, multiple sclerosis
+aortic aneurysm	atherosclerosis, aortic dissection, aortic thromboembolism, inflammatory aortic aneurysm, familial thoracic aortic aneurysm syndrome, mycotic aneurysm, traumatic rupture of the aorta.
+myeloblastic leukemia	myelodysplastic syndrome, myeloproliferative neoplasms, acute lymphoblastic leukemia.
+malignant neoplasm of stomach	gastritis, peptic ulcer disease, gastroesophageal reflux disease (gerd), gastric polyps, benign gastric tumors, gastrointestinal stromal tumor (gist), lymphoma of the stomach.
+malignant neoplasm of esophagus	gastroesophageal reflux disease (gerd), barrett's esophagus, achalasia, esophageal spasm, peptic ulcer disease (pud), esophageal varices, hiatal hernia, eosinophilic esophagitis, infectious esophagitis.
+sepsis	pneumonia, influenza, meningitis, cellulitis, urinary tract infection, gastroenteritis, endocarditis, osteomyelitis, appendicitis
+multiple sclerosis	neuromyelitis optica, acute disseminated encephalomyelitis, lupus, lyme disease, sjogren's syndrome, optico-spinal ms, progressive multifocal leukoencephalopathy, vasculitis.
+chronic rheumatic heart disease	mitral valve stenosis, mitral valve regurgitation, aortic valve stenosis, aortic valve regurgitation, tricuspid valve regurgitation, pulmonary valve stenosis.
+malignant neoplasm of temporal lobe	encephalitis, stroke, glioma, brain abscess, multiple sclerosis.
+ischemic heart disease	angina pectoris, myocardial infarction, congestive heart failure, arrhythmias, cardiomyopathy
+malignant neoplasm of retroperitoneum	lipoma, sarcoma, lymphoma, neurofibroma, leiomyosarcoma, liposarcoma, metastasis from another site
+acute embolism	pulmonary hypertension, acute cardiac ischemia, pneumothorax, acute exacerbation of chronic obstructive pulmonary disease (copd), acute respiratory distress syndrome (ards), pneumonia.
+encephalitis	meningitis, brain abscess, stroke, multiple sclerosis, lyme disease, metabolic disorders.
+heart failure	coronary artery disease, hypertension, valvular heart disease, cardiomyopathy, arrhythmias, pulmonary hypertension, pulmonary embolism.
+encephalitis myelitis	meningitis, brain abscess, viral meningoencephalitis, multiple sclerosis, guillain-barré syndrome, transverse myelitis, cerebrovascular disease, brain tumors.
+benign neoplasm of cerebral meninges	meningioma, schwannoma, hemangiopericytoma, neurofibroma.
+myocardial infarction	angina, pericarditis, heart failure, aortic dissection, pulmonary embolism, gastroesophageal reflux disease, anxiety or panic attack.
+atherosclerotic heart disease	coronary artery disease, peripheral arterial disease, stroke, transient ischemic attack (tia), heart attack, angina, arrhythmia.
+rheumatic tricuspid insufficiency	right ventricular failure, pulmonary hypertension, congenital heart disease, infective endocarditis.
+embolism	deep vein thrombosis, pneumonia, heart attack, lung cancer, aortic aneurysm, pulmonary hypertension, anxiety, panic attack, musculoskeletal injury, arrhythmia.
+occlusion	temporomandibular joint disorder (tmd), malocclusion, dental caries, periodontitis.
+malignant neoplasm of lymph nodes	non-hodgkin lymphoma, hodgkin lymphoma, metastatic cancer, lymphoid hyperplasia, lymphadenitis.
+malignant neoplasm of thyroid gland	benign thyroid nodules, hashimoto's thyroiditis, graves' disease, follicular adenoma, thyroid lymphoma, metastatic cancer to the thyroid gland.
+benign neoplasm of cecum	adenoma, hyperplastic polyp, inflammatory polyp, lymphoid hyperplasia, diverticulum.
+cardiac arrest	acute myocardial infarction, arrhythmia, pulmonary embolism, drug overdose, hypovolemia, hypoxia, electrocution, severe electrolyte imbalance.
+malignant neoplasm of nasopharynx	nasopharyngitis, otitis media, sinusitis, allergy, gastroesophageal reflux disease (gerd), tonsillitis, adenoiditis.
+bone cancer	osteoporosis, arthritis, osteomyelitis, bone cysts.
+gout	rheumatoid arthritis, osteoarthritis, pseudogout, septic arthritis, reactive arthritis, psoriatic arthritis, lupus, fibromyalgia.
+lymphocytic leukemia	lymphoma, multiple myeloma, chronic lymphocytic leukemia, acute myeloid leukemia, waldenström macroglobulinemia
+atrial fibrillation	heart failure, pneumonia, hyperthyroidism, pulmonary embolism, pulmonary hypertension, myocardial infarction, drug-induced arrhythmia.
+atherosclerosis	coronary artery disease, peripheral artery disease, carotid artery disease, renal artery disease.
+stricture	benign prostatic hyperplasia, bladder cancer, urethral diverticulum, urethritis, urethral trauma
+epilepsy	migraines, sleep disorders, panic attacks, syncope, and psychogenic seizures.
+hypertensive chronic kidney disease	diabetic kidney disease, glomerular disease, obstructive uropathy, interstitial nephritis, polycystic kidney disease.
+lung cancer	chronic obstructive pulmonary disease (copd), tuberculosis (tb), pneumonia, bronchitis, asthma.
+malignant neoplasm of brain	meningioma, glioma, metastatic brain tumor, astrocytoma, oligodendroglioma.
+cerebral aneurysm	brain tumor, subarachnoid hemorrhage, arteriovenous malformation, migraine, cluster headache, tension headache
+liver cancer	hepatitis, cirrhosis, alcoholic liver disease, nonalcoholic fatty liver disease (nafld), biliary tract obstruction.
+rheumatic heart failure	infective endocarditis, coronary artery disease, hypertensive heart disease, dilated cardiomyopathy
+hypertensive disease	coronary artery disease, heart failure, kidney disease, stroke, peripheral artery disease, aortic aneurysm.
+dissection	aneurysm, thrombosis, embolism, angina, myocardial infarction, pneumonia, pulmonary embolism, gastroesophageal reflux disease
+ventricular tachycardia	ventricular fibrillation, supraventricular tachycardia, premature ventricular contractions, atrial fibrillation, atrial flutter, sinus tachycardia.
+atrial flutter	atrial fibrillation, supraventricular tachycardia, sinus tachycardia, and premature atrial contractions.
+iron deficiency anemias	thalesemia, hemolytic anemia, vitamin b12 deficiency, folate deficiency, chronic kidney disease, gastrointestinal bleeding.
+restrictive cardiomyopathy	amyloidosis, hemochromatosis, sarcoidosis, endomyocardial fibrosis, loeffler syndrome.
+esophageal varices	gastritis, peptic ulcer disease, mallory-weiss tears, esophageal cancer, esophageal stricture.
+subarachnoid hemorrhage	intracerebral hemorrhage, meningitis, migraine, cerebral venous sinus thrombosis
+liver cell carcinoma	hepatocellular adenoma, hepatic hemangioma, metastatic liver cancer, cholangiocarcinoma, liver abscess, liver cyst, focal nodular hyperplasia
+endocarditis	sepsis, myocarditis, pulmonary embolism, rheumatic fever, systemic lupus erythematosus (sle)
+ischemic cardiomyopathy	coronary artery disease, hypertension, valvular heart disease, congenital heart disease, alcoholic cardiomyopathy, viral myocarditis, familial cardiomyopathy.
+brain cancer	migraine, stroke, meningitis, brain abscess, multiple sclerosis, parkinson's disease, alzheimer's disease, encephalitis, brain injury, hydrocephalus
+diffuse large b-cell lymphoma	hodgkin lymphoma, follicular lymphoma, mantle cell lymphoma, marginal zone lymphoma, burkitt lymphoma, t-cell lymphoma.
+cardiomegaly	hypertension, coronary heart disease, valvular heart disease, dilated cardiomyopathy, restrictive cardiomyopathy, pericardial effusion, congenital heart disease
+alzheimer's disease	frontotemporal dementia, lewy body dementia, vascular dementia, parkinson's disease dementia.
+supraventricular tachycardia	atrial flutter, atrial fibrillation, wolff-parkinson-white syndrome, sinus tachycardia, junctional tachycardia.
+cardiac arrhythmias	coronary artery disease, heart failure, valvular heart disease, pulmonary embolism, hyperthyroidism, electrolyte imbalances, drug toxicity, sleep apnea.
+nonrheumatic aortic valve stenosis	bicuspid aortic valve, congenital heart disease, calcified aortic valve, aortic valve sclerosis, aortic valve fibrosis, infective endocarditis.
+systolic heart failure	hypertrophic cardiomyopathy, dilated cardiomyopathy, cardiac tamponade, myocarditis, valvular heart disease, arrhythmia, pulmonary hypertension.
+nonrheumatic mitral valve insufficiency	congenital heart defects, endocarditis, cardiomyopathy, hypertensive heart disease, coronary artery disease, aortic valve disease.
+cerebrovascular disease	stroke, transient ischemic attack (tia), carotid artery disease, cerebral aneurysm, arteriovenous malformation (avm), intracerebral hemorrhage, subarachnoid hemorrhage.
+breast cancer	fibroadenoma, cyst, mastitis, lipoma, fibrocystic breast changes, benign breast tumors.
+pulmonary hypertension	left ventricular heart failure, chronic obstructive pulmonary disease (copd), primary pulmonary fibrosis, pulmonary embolism, sleep apnea, congenital heart disease.
+diastolic heart failure	hypertrophic cardiomyopathy, restrictive cardiomyopathy, constrictive pericarditis, pulmonary hypertension, pulmonary embolism, myocarditis, aortic stenosis.

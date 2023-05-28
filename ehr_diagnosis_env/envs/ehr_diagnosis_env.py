@@ -1,4 +1,5 @@
 import gymnasium as gym
+import torch
 from gymnasium import spaces
 from ehr_diagnosis_env.utils import *
 from tqdm import tqdm
@@ -7,11 +8,14 @@ import pandas as pd
 import io
 import string
 from sentence_transformers import SentenceTransformer, util
+from .. import utils
+from importlib.resources import files
 
 
 class EHRDiagnosisEnv(gym.Env):
-    def __init__(self, instances=None, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.75,
-                 progress_bar=None, continuous_reward=True):
+    def __init__(self, instances=None, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.85,
+                 progress_bar=None, continuous_reward=True, include_alternative_diagnoses=True,
+                 num_future_diagnoses_threshold=1, match_confident_diagnoses=True):
         """
         :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
             dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
@@ -23,6 +27,9 @@ class EHRDiagnosisEnv(gym.Env):
         self.fuzzy_matching_threshold = fuzzy_matching_threshold
         self.progress_bar = progress_bar
         self.continuous_reward = continuous_reward
+        self.include_alternative_diagnoses = include_alternative_diagnoses
+        self.num_future_diagnoses_threshold = num_future_diagnoses_threshold
+        self.match_confident_diagnoses = match_confident_diagnoses
 
         self.seed = None
         self.action_space = spaces.Box(low=-float('inf'), high=float('inf'))
@@ -65,6 +72,14 @@ class EHRDiagnosisEnv(gym.Env):
         self.fuzzy_matching_model = None
         if self.fuzzy_matching_threshold is not None:
             self.fuzzy_matching_model = SentenceTransformer('all-MiniLM-L6-v2')
+        if self.include_alternative_diagnoses or self.match_confident_diagnoses:
+            alternatives1 = pd.read_csv(files(utils) / 'gpt_alternative_diagnoses.txt', delimiter='\t')
+            alternatives2 = pd.read_csv(files(utils) / 'manual_alternatives.txt', delimiter='\t')
+            self.alternatives = pd.concat([alternatives1, alternatives2])
+            self.alternatives['full_set'] = self.alternatives.apply(
+                lambda r: set([r.diagnosis] + [a.strip() for a in r.alternatives.split(',')]), axis=1)
+        if self.match_confident_diagnoses:
+            self.all_reference_diagnoses = set().union(*self.alternatives.full_set.to_list())
 
     def to(self, device):
         self.model.to(device)
@@ -80,6 +95,8 @@ class EHRDiagnosisEnv(gym.Env):
             'risk prediction': [],
             'confident diagnoses': [],
         }
+        if self.match_confident_diagnoses:
+            extracted_information['matched confident diagnoses'] = []
         for i, row in self.progress_bar(
                 reports.iterrows(), total=len(reports), desc='extracting information from reports'):
             first_queries = ['differential diagnoses', 'risk prediction', 'confident diagnosis exists']
@@ -97,6 +114,10 @@ class EHRDiagnosisEnv(gym.Env):
                 extracted_information['confident diagnoses'].append(process_set_output(out['output'][0]))
             else:
                 extracted_information['confident diagnoses'].append(set())
+            if self.match_confident_diagnoses:
+                extracted_information['matched confident diagnoses'].append(
+                    self.get_matched_diagnoses(
+                        extracted_information['confident diagnoses'][-1], self.all_reference_diagnoses))
         # initially set to the union of all confident diagnoses that appear in the future
         current_targets = set().union(*extracted_information['confident diagnoses'])
         return extracted_information, current_targets
@@ -110,6 +131,51 @@ class EHRDiagnosisEnv(gym.Env):
             "evidence": evidence.to_csv(index=False),
             "evidence_is_retrieved": self._evidence_is_retrieved,
         }
+
+    def is_match(self, xs, ys):
+        if self.fuzzy_matching_threshold is not None:
+            xs = list(xs)
+            ys = list(ys)
+            embeddings = self.fuzzy_matching_model.encode(xs + ys, convert_to_tensor=True)
+            cosine_scores = util.cos_sim(embeddings[:len(xs)], embeddings[len(xs):])
+            indices = cosine_scores.argmax(1)
+            return (
+                [cosine_scores[i, index] > self.fuzzy_matching_threshold for i, index in enumerate(indices)],
+                [ys[index] for index in indices])
+        else:
+            return [x in ys for x in xs], xs
+
+    def get_matched_diagnoses(self, terms1, terms2):
+        if len(terms1) == 0 or len(terms2) == 0:
+            return set()
+        matched, terms = self.is_match(terms1, tuple(terms2))
+        return set([t for m, t in zip(matched, terms) if m])
+
+    def get_alternative_diagnoses(self, diagnoses, symmetric_and_transitive=True):
+        all_alternatives = []
+        for diagnosis in diagnoses:
+            if symmetric_and_transitive:
+                all_alternatives.extend([
+                    d for i, row in self.alternatives[self.alternatives.full_set.apply(
+                        lambda x: diagnosis in x)].iterrows()
+                    for d in row.full_set.difference([diagnosis])])
+            else:
+                alternatives = \
+                    self.alternatives[self.alternatives.diagnosis == diagnosis].iloc[0].alternatives.split(',')
+                all_alternatives.extend([a.strip() for a in alternatives])
+        return set(all_alternatives)
+
+    def update_current_potential_diagnoses(self):
+        new_potential_diagnoses = \
+            self._extracted_information['differential diagnoses'][self._current_report_index].union(
+                self._extracted_information['risk prediction'][self._current_report_index])
+        if self.include_alternative_diagnoses:
+            matched_diagnoses = self.get_matched_diagnoses(new_potential_diagnoses, self.all_reference_diagnoses)
+                # new_potential_diagnoses, self.alternatives.diagnosis.to_list())
+            alternative_diagnoses = self.get_alternative_diagnoses(matched_diagnoses)
+            new_potential_diagnoses = new_potential_diagnoses.union(alternative_diagnoses)
+        self._current_potential_diagnoses = sorted(list(
+            set(self._current_potential_diagnoses).union(new_potential_diagnoses)))
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -137,12 +203,12 @@ class EHRDiagnosisEnv(gym.Env):
         self._evidence_is_retrieved = False
         # go to the first note with a nonzero number of potential diagnoses
         self._current_potential_diagnoses = []
-        while len(self._current_potential_diagnoses) == 0:
+        # you should keep increasing the start until you reach at least 2 differential diagnoses
+        # but you have to start before the last report
+        while len(self._current_potential_diagnoses) < 2 and self._current_report_index + 2 < len(self._all_reports):
             self._current_report_index += 1
             self._start_report_index += 1
-            self._current_potential_diagnoses = sorted(list(set(self._current_potential_diagnoses).union(
-                self._extracted_information['differential diagnoses'][self._current_report_index],
-                self._extracted_information['risk prediction'][self._current_report_index])))
+            self.update_current_potential_diagnoses()
             self.action_space = spaces.Box(
                 low=-float('inf'), high=float('inf'), shape=(len(self._current_potential_diagnoses),))
             # delete the known confident diagnoses given the report from the targets
@@ -152,10 +218,17 @@ class EHRDiagnosisEnv(gym.Env):
         info = {'max_timesteps': (len(self._all_reports) - self._current_report_index) * 2,
                 'current_targets': self._current_targets,
                 'current_report': self._current_report_index}
-        if len(self._current_targets) == 0:
-            print('Environment is dead because there were no extracted targets. '
+        if len(self._current_potential_diagnoses) < 2:
+            print('Environment is dead because there is less than 2 differential diagnoses. '
+                  'You can either monitor for this by checking the length of the potential diagnoses in the '
+                  'observation, or you can perform a dummy action (which will have no effect) and '
+                  'truncate the episode.'.format(
+                self.num_future_diagnoses_threshold))
+        if len(self._current_targets) < self.num_future_diagnoses_threshold:
+            print('Environment is dead because there was less than {} extracted targets. '
                   'You can either monitor for this by checking the length of the current targets in info, or '
-                  'you can perform a dummy action (which will have no effect) and truncate the episode.')
+                  'you can perform a dummy action (which will have no effect) and truncate the episode.'.format(
+                self.num_future_diagnoses_threshold))
         return observation, info
 
     def _update_evidence(self, diagnoses_to_query):
@@ -196,18 +269,15 @@ class EHRDiagnosisEnv(gym.Env):
             for diagnosis, evidence in zip(diagnoses_to_query_temp2, out['output']):
                 self._current_evidence[diagnosis][i] = evidence
 
-    def is_match(self, x, ys):
-        if self.fuzzy_matching_threshold is not None:
-            ys = list(ys)
-            embeddings = self.fuzzy_matching_model.encode([x] + ys, convert_to_tensor=True)
-            cosine_scores = util.cos_sim(embeddings[:1], embeddings[1:])
-            index = cosine_scores[0].argmax().item()
-            if cosine_scores[0, index] > self.fuzzy_matching_threshold:
-                return True, ys[index]
-            else:
-                return False, None
+    def reward_per_item(self, action, potential_diagnoses, targets):
+        if self.continuous_reward:
+            normalized_action = torch.softmax(action, 0)
         else:
-            return x in ys, x
+            potential_diagnoses = sort_by_scores(potential_diagnoses, action)
+        is_match, best_match = self.is_match(potential_diagnoses, targets)
+        reward = normalized_action if self.continuous_reward else 1 / (torch.arange(len(is_match)) + 1)
+        reward = reward.masked_fill(~torch.tensor(is_match, device=reward.device), 0)
+        return is_match, best_match, reward
 
     def step(self, action):
         info = {'max_timesteps': (len(self._all_reports) - self._current_report_index) * 2}
@@ -220,17 +290,12 @@ class EHRDiagnosisEnv(gym.Env):
             terminated = False
             self._evidence_is_retrieved = True
         else:
-            if self.continuous_reward:
-                normalized_action = action / action.sum()
-            else:
-                self._current_potential_diagnoses = sort_by_scores(self._current_potential_diagnoses, action)
-            reward = 0
-            true_positives = []
-            for j, risk in enumerate(self._current_potential_diagnoses):
-                is_match, best_match = self.is_match(risk, self._current_targets)
-                if is_match:
-                    reward += normalized_action[j] if self.continuous_reward else 1 / (j + 1)
-                    true_positives.append((risk, best_match, j + 1))
+            is_match, best_match, reward = self.reward_per_item(
+                action, self._current_potential_diagnoses, self._current_targets)
+            true_positives = [
+                (risk, bm, r)
+                for risk, im, bm, r in zip(self._current_potential_diagnoses, is_match, best_match, reward) if im]
+            reward = reward.sum().item()
             info['true_positives'] = true_positives
             self._current_report_index += 1
             self._evidence_is_retrieved = False
@@ -239,13 +304,11 @@ class EHRDiagnosisEnv(gym.Env):
                 # delete the known confident diagnoses given the first report from the targets
                 self._current_targets = self._current_targets.difference(
                     self._extracted_information['confident diagnoses'][self._current_report_index])
-                self._current_potential_diagnoses = sorted(list(set(self._current_potential_diagnoses).union(
-                    self._extracted_information['differential diagnoses'][self._current_report_index],
-                    self._extracted_information['risk prediction'][self._current_report_index])))
+                self.update_current_potential_diagnoses()
                 self.action_space = spaces.Box(
                     low=-float('inf'), high=float('inf'), shape=(len(self._current_potential_diagnoses),))
         observation = self._get_obs()
         info['current_targets'] = self._current_targets
         info['current_report'] = self._current_report_index
-        truncated = len(self._current_targets) == 0
+        truncated = len(self._current_targets) < self.num_future_diagnoses_threshold
         return observation, reward, terminated, truncated, info
