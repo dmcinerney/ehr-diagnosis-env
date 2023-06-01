@@ -11,11 +11,14 @@ instances = pd.read_csv(
     '/work/frink/mcinerney.de/datasets/mimic-iii/physionet.org/files/mimiciii/1.4/preprocessed/reports_and_codes3/val.data',
     compression='gzip')
 env = gymnasium.make(
-    'ehr_diagnosis_env/EHRDiagnosisEnv-v0', instances=instances[instance_num:instance_num+1],
+    'ehr_diagnosis_env/EHRDiagnosisEnv-v0', instances=instances,
     # model_name='google/flan-t5-xl'
     model_name='google/flan-t5-xxl'
 )
-observation, info = env.reset()
+observation, info = env.reset(options={'instance_index': instance_num})
+while env.is_truncated(observation, info):
+    instance_num += 1
+    observation, info = env.reset(options={'instance_index': instance_num})
 cumulative_reward = 0
 for i in range(1000):
     print(f'Timestep {i + 1}')
