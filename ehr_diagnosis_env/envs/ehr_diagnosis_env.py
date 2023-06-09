@@ -1,3 +1,5 @@
+import os
+
 import gymnasium as gym
 import torch
 from gymnasium import spaces
@@ -10,18 +12,24 @@ import string
 from sentence_transformers import SentenceTransformer, util
 from .. import utils
 from importlib.resources import files
+import pickle as pkl
 
 
 class EHRDiagnosisEnv(gym.Env):
     def __init__(self, instances=None, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.85,
                  progress_bar=None, continuous_reward=True, include_alternative_diagnoses=True,
-                 num_future_diagnoses_threshold=1, match_confident_diagnoses=True, true_positive_minimum=1):
+                 num_future_diagnoses_threshold=1, match_confident_diagnoses=True, true_positive_minimum=1,
+                 cache_path=None):
         """
         :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
             dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
         :param top_k_evidence: an int determining how many diagnoses for which to query evidence
         """
-        self._all_instances = instances
+        self._all_instances = None
+        self._extracted_information_cache = None
+        self.cache_path = None
+        if instances is not None:
+            self.set_instances(instances, cache_path=cache_path)
         self._seen_instances = set()
         self.top_k_evidence = top_k_evidence
         self.model_name = model_name
@@ -32,6 +40,7 @@ class EHRDiagnosisEnv(gym.Env):
         self.num_future_diagnoses_threshold = num_future_diagnoses_threshold
         self.match_confident_diagnoses = match_confident_diagnoses
         self.true_positive_minimum = true_positive_minimum
+        self.cache_path = cache_path
 
         self.seed = None
         self.action_space = spaces.Box(low=-float('inf'), high=float('inf'))
@@ -67,7 +76,7 @@ class EHRDiagnosisEnv(gym.Env):
 
         self._all_reports = None
         self._extracted_information = None
-        self._extracted_information_cache = {}
+
         print('loading model interface')
         self.model = get_model_interface(model_name)
         self.fuzzy_matching_model = None
@@ -86,9 +95,17 @@ class EHRDiagnosisEnv(gym.Env):
         self.model.to(device)
         self.fuzzy_matching_model.to(device)
 
-    def set_instances(self, instances):
+    def set_instances(self, instances, cache_path=None):
         self._all_instances = instances
         self._extracted_information_cache = {}
+        self.cache_path = cache_path
+        if self.cache_path is not None:
+            if not os.path.exists(self.cache_path):
+                os.mkdir(self.cache_path)
+            for file in os.listdir(self.cache_path):
+                if file.startswith('cached_instance_'):
+                    with open(os.path.join(self.cache_path, file), 'rb') as f:
+                        self._extracted_information_cache.update(pkl.load(f))
 
     def extract_info(self, reports):
         extracted_information = {
@@ -98,7 +115,10 @@ class EHRDiagnosisEnv(gym.Env):
             'potential diagnoses': [],
             'target diagnoses': [],
             'true positives': [],
+            'past target diagnoses': [],
         }
+        diagnosis_target_key = 'matched confident diagnoses' \
+            if self.match_confident_diagnoses else 'confident diagnoses'
         if self.match_confident_diagnoses:
             extracted_information['matched confident diagnoses'] = []
         for i, row in self.progress_bar(
@@ -122,24 +142,41 @@ class EHRDiagnosisEnv(gym.Env):
                 extracted_information['matched confident diagnoses'].append(
                     self.get_matched_diagnoses(
                         extracted_information['confident diagnoses'][-1], self.all_reference_diagnoses))
-        # initially set to the union of all confident diagnoses that appear in the future
-        current_targets = set().union(*extracted_information['confident diagnoses'])
-        for differential_diagnoses, risks, confident_diagnoses in zip(
+            # keep a running list of confident diagnoses seen up to and including the current time-points
+            previous_past_targets = set() if len(extracted_information['past target diagnoses']) == 0 else \
+                extracted_information['past target diagnoses'][-1]
+            extracted_information['past target diagnoses'].append(
+                previous_past_targets.union(extracted_information[diagnosis_target_key][-1]))
+        # initially set to the union of all confident diagnoses that emerge in the episode
+        for differential_diagnoses, risks, target_diagnoses, past_targets in zip(
                 extracted_information['differential diagnoses'],
                 extracted_information['risk prediction'],
-                extracted_information['confident diagnoses']
+                extracted_information[diagnosis_target_key],
+                extracted_information['past target diagnoses'],
         ):
-            current_targets = current_targets.difference(confident_diagnoses)
-            extracted_information['target diagnoses'].append(current_targets)
+            # eliminate the targets that appear in the report from the list of targets for that and future time-point
+            previous_targets = extracted_information['past target diagnoses'][-1] \
+                if len(extracted_information['target diagnoses']) == 0 else \
+                extracted_information['target diagnoses'][-1]
+            extracted_information['target diagnoses'].append(previous_targets.difference(target_diagnoses))
+            # keep a running list of potential diagnoses by combining differentials and risks
             new_potential_diagnoses = differential_diagnoses.union(risks)
             if self.include_alternative_diagnoses:
+                # if including alternatives, expand the list by adding anything that appears in the same line (in the
+                # alternatives) as something that matched
                 matched_diagnoses = self.get_matched_diagnoses(new_potential_diagnoses, self.all_reference_diagnoses)
                 alternative_diagnoses = self.get_alternative_diagnoses(matched_diagnoses)
                 new_potential_diagnoses = new_potential_diagnoses.union(alternative_diagnoses)
             current_potential_diagnoses = extracted_information['potential diagnoses'][-1] \
                 if len(extracted_information['potential diagnoses']) > 0 else set()
-            extracted_information['potential diagnoses'].append(sorted(list(
-                set(current_potential_diagnoses).union(new_potential_diagnoses))))
+            current_potential_diagnoses = sorted(list(
+                set(current_potential_diagnoses).union(new_potential_diagnoses)))
+            # eliminate anything that matches with a past target
+            if len(current_potential_diagnoses) > 0 and len(past_targets) > 0:
+                is_match, best_match = self.is_match(current_potential_diagnoses, past_targets)
+                current_potential_diagnoses = [d for d, im in zip(current_potential_diagnoses, is_match) if not im]
+            extracted_information['potential diagnoses'].append(current_potential_diagnoses)
+            # calculate true positives
             if len(extracted_information['potential diagnoses'][-1]) > 0 and \
                     len(extracted_information['target diagnoses'][-1]) > 0:
                 is_match, best_match = self.is_match(
@@ -224,6 +261,7 @@ class EHRDiagnosisEnv(gym.Env):
                 if len(novel_instances) == 0:
                     print('Gone through all seen examples, resetting epoch!')
                     self.reset_epoch()
+                    novel_instances = set(range(len(self._all_instances))).difference(self._seen_instances)
                 index = np.random.choice(sorted(list(novel_instances)))
             # add picked example to seen examples
             self._seen_instances.add(index)
@@ -234,6 +272,9 @@ class EHRDiagnosisEnv(gym.Env):
             # environment to a previously seen instance
             if index not in self._extracted_information_cache.keys():
                 self._extracted_information_cache[index] = self.extract_info(self._all_reports)
+                if self.cache_path is not None:
+                    with open(os.path.join(self.cache_path, f'cached_instance_{index}.pkl'), 'wb') as f:
+                        pkl.dump({index: self._extracted_information_cache[index]}, f)
             self._extracted_information = self._extracted_information_cache[index]
         # start off with no evidence
         self._current_evidence = {}
@@ -256,7 +297,8 @@ class EHRDiagnosisEnv(gym.Env):
                 'current_targets': self._extracted_information['target diagnoses'][self._current_report_index],
                 'current_report': self._current_report_index,
                 'future_true_positives': set().union(
-                    *self._extracted_information['true positives'][self._current_report_index:])}
+                    *self._extracted_information['true positives'][self._current_report_index:]),
+                'past_targets': self._extracted_information['past target diagnoses'][self._current_report_index]}
         if len(self._current_potential_diagnoses) < 2:
             print('Environment is dead because there is less than 2 differential diagnoses. '
                   'You can either monitor for this by checking with env.is_truncated(obs, info), '
@@ -346,18 +388,23 @@ class EHRDiagnosisEnv(gym.Env):
                 for risk, im, bm, r in zip(self._current_potential_diagnoses, is_match, best_match, reward) if im]
             reward = reward.sum().item()
             info['true_positives'] = true_positives
-            self._current_report_index += 1
-            self._evidence_is_retrieved = False
-            terminated = self._current_report_index == len(self._all_reports) - 1
-            if not terminated:
+            move_to_next_report = True
+            while move_to_next_report:
+                self._current_report_index += 1
+                self._evidence_is_retrieved = False
+                terminated = self._current_report_index == len(self._all_reports) - 1
+                if terminated:
+                    break
                 self.update_current_potential_diagnoses()
                 self.action_space = spaces.Box(
                     low=-float('inf'), high=float('inf'), shape=(len(self._current_potential_diagnoses),))
+                move_to_next_report = len(self._current_potential_diagnoses) < 2
         observation = self._get_obs()
         info['current_targets'] = self._extracted_information['target diagnoses'][self._current_report_index]
         info['current_report'] = self._current_report_index
         info['future_true_positives'] = set().union(
             *self._extracted_information['true positives'][self._current_report_index:])
+        info['past_targets'] = self._extracted_information['past target diagnoses'][self._current_report_index]
         truncated = self.is_truncated(observation, info)
         return observation, reward, terminated, truncated, info
 

@@ -7,6 +7,7 @@ class ModelInterface:
         self.model_name = model_name
         self.tokenizer = self.get_tokenizer(model_name)
         self.model = self.get_model(model_name)
+        self.model.eval()
 
     def to(self, device):
         self.model.to(device)
