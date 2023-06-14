@@ -379,14 +379,20 @@ class EHRDiagnosisEnv(gym.Env):
                 self._current_evidence[diagnosis][i] = evidence
 
     def reward_per_item(self, action, potential_diagnoses, targets):
+        # To be consistent, all rewards (regardless of reward type) are assumed to be in log space
+        # (This will make things easier if numerical instability becomes a problem.)
         if self.reward_type == 'continuous_independent':
+            # exp action
+            action = torch.exp(action)
             is_match, best_match = self.is_match(potential_diagnoses, targets)
-            reward = action * (torch.tensor(is_match, device=action.device) * 2 - 1)
+            reward =  action * (torch.tensor(is_match, device=action.device) * 2 - 1)
         elif self.reward_type == 'continuous_dependent':
-            is_match, best_match = self.is_match(potential_diagnoses, targets)
+            # softmax action
             reward = torch.softmax(action, 0)
+            is_match, best_match = self.is_match(potential_diagnoses, targets)
             reward = reward.masked_fill(~torch.tensor(is_match, device=action.device), 0)
         elif self.reward_type == 'ranking':
+            # no action transformation bc actions is only used for sorting
             potential_diagnoses = sort_by_scores(potential_diagnoses, action)
             is_match, best_match = self.is_match(potential_diagnoses, targets)
             reward = 1 / (torch.arange(len(is_match)) + 1)
