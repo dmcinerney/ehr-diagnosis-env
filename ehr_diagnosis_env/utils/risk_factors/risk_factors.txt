@@ -1,0 +1,3 @@
+diagnosis	risk factors
+pneumonia	a stroke, trouble swallowing, a compromised immune system, a high white blood cell count, no steroid use, a fever
+pulmonary edema	a low ejection fraction, a heart attack

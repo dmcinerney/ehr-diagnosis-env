@@ -65,6 +65,37 @@ Answer: """,
 
 Answer step by step: Why is the patient at risk of <evidence query>?
 Answer: """,
+    'presenting complaint exists': \
+"""Read the following report:
+
+<input>
+
+Does this report contain the presenting complaint?
+Answer: """,
+    'presenting complaint': \
+"""Read the following report:
+
+<input>
+
+What is the patient's presenting complaint?
+Answer: """,
+    'differentials from complaint': \
+"""A patient presents with <presenting complaint>. Provide a list of the differential diagnoses a clinician should consider.
+Answer: """,
+    'evidence via rf exists': \
+"""Read the following report:
+
+<input>
+
+Question: Does the patient have <evidence rf query>? Choice: -Yes -No
+Answer: """,
+    'evidence via rf retrieval': \
+"""Read the following report:
+
+<input>
+
+What evidence is there that the patient has <evidence rf query>?
+Answer: """,
 }
 
 
