@@ -20,11 +20,12 @@ import pickle as pkl
 
 
 class EHRDiagnosisEnv(gym.Env):
-    def __init__(self, instances=None, top_k_evidence=3, model_name='google/flan-t5-xxl', fuzzy_matching_threshold=.85,
+    def __init__(self, instances=None, top_k_evidence=3, llm_name_or_interface='google/flan-t5-xxl',
+                 fmm_name_or_interface='all-MiniLM-L6-v2', fuzzy_matching_threshold=.85,
                  progress_bar=None, reward_type='continuous_independent', include_alternative_diagnoses=True,
                  num_future_diagnoses_threshold=1, match_confident_diagnoses=True, match_potential_diagnoses=True,
                  true_positive_minimum=1, cache_path=None, limit_targets_to=None, verbosity=2, alternatives_dir=None,
-                 add_risk_factor_queries=True, risk_factors_dir=None):
+                 add_risk_factor_queries=True, risk_factors_dir=None, limit_options_with_llm=True):
         """
         :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
             dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
@@ -37,7 +38,6 @@ class EHRDiagnosisEnv(gym.Env):
             self.set_instances(instances, cache_path=cache_path)
         self._seen_instances = set()
         self.top_k_evidence = top_k_evidence
-        self.model_name = model_name
         self.fuzzy_matching_threshold = fuzzy_matching_threshold
         self.progress_bar = progress_bar if progress_bar is not None else tqdm
         self.reward_type = reward_type
@@ -59,6 +59,7 @@ class EHRDiagnosisEnv(gym.Env):
         self.add_risk_factor_queries = add_risk_factor_queries
         self.risk_factors_dir = str(files(utils) / 'risk_factors') \
             if risk_factors_dir is None else risk_factors_dir
+        self.limit_options_with_llm = limit_options_with_llm
 
         self.seed = None
         self.action_space = spaces.Box(low=-float('inf'), high=float('inf'))
@@ -93,10 +94,16 @@ class EHRDiagnosisEnv(gym.Env):
         self._extracted_information = None
 
         print('loading model interface')
-        self.model = get_model_interface(model_name)
+        if isinstance(llm_name_or_interface, str):
+            self.model = get_model_interface(llm_name_or_interface)
+        else:
+            self.model = llm_name_or_interface
         self.fuzzy_matching_model = None
         if self.fuzzy_matching_threshold is not None:
-            self.fuzzy_matching_model = SentenceTransformer('all-MiniLM-L6-v2')
+            if isinstance(fmm_name_or_interface, str):
+                self.fuzzy_matching_model = SentenceTransformer(fmm_name_or_interface)
+            else:
+                self.fuzzy_matching_model = fmm_name_or_interface
         if self.include_alternative_diagnoses or self.match_confident_diagnoses or self.match_potential_diagnoses:
             alternatives_dfs = []
             for file in os.listdir(self.alternatives_dir):
@@ -105,8 +112,8 @@ class EHRDiagnosisEnv(gym.Env):
             self.alternatives = pd.concat(alternatives_dfs)
             self.alternatives['full_set'] = self.alternatives.apply(
                 lambda r: set([r.diagnosis] + [a.strip() for a in r.alternatives.split(',')]), axis=1)
-        if self.match_confident_diagnoses:
-            self.all_reference_diagnoses = set().union(*self.alternatives.full_set.to_list())
+        self.all_reference_diagnoses = set().union(*self.alternatives.full_set.to_list()) \
+            if self.match_confident_diagnoses else None
         if self.add_risk_factor_queries:
             risk_factors_dfs = []
             for file in os.listdir(self.risk_factors_dir):
@@ -181,15 +188,20 @@ class EHRDiagnosisEnv(gym.Env):
             'potential diagnoses': [],
             'risk factors': [],
             'target diagnoses': [],
+            'target diagnosis countdown': [],
             'true positives': [],
             'past target diagnoses': [],
         }
         confident_diagnoses = []
+        confident_diagnosis_timepoints = {}
         for i in range(len(next(iter(extracted_information.values())))):
             extracted_targets = extracted_information['confident diagnoses'][i]
             if self.match_confident_diagnoses:
                 extracted_targets = self.get_matched_diagnoses(extracted_targets, self.all_reference_diagnoses)
             confident_diagnoses.append(extracted_targets)
+            for target in extracted_targets:
+                if target not in confident_diagnosis_timepoints.keys():
+                    confident_diagnosis_timepoints[target] = i
         all_targets = set().union(*confident_diagnoses)
         # TODO: add differentials from presenting complaint
         # initially set to the union of all confident diagnoses that emerge in the episode
@@ -207,21 +219,29 @@ class EHRDiagnosisEnv(gym.Env):
                 if len(processed_extracted_info['target diagnoses']) == 0 else \
                 processed_extracted_info['target diagnoses'][-1]
             processed_extracted_info['target diagnoses'].append(previous_targets.difference(target_diagnoses))
+            processed_extracted_info['target diagnosis countdown'].append({
+                t: confident_diagnosis_timepoints[t] - i
+                for t in processed_extracted_info['target diagnoses'][-1]})
             # keep a running list of potential diagnoses by combining differentials and risks
-            new_potential_diagnoses = differential_diagnoses.union(risks)
-            if self.match_potential_diagnoses:
-                new_potential_diagnoses = self.get_matched_diagnoses(new_potential_diagnoses, self.all_reference_diagnoses)
-            if self.include_alternative_diagnoses:
-                # if including alternatives, expand the list by adding anything that appears in the same line (in the
-                # alternatives) as something that matched
-                matched_diagnoses = new_potential_diagnoses if self.match_potential_diagnoses else \
-                    self.get_matched_diagnoses(new_potential_diagnoses, self.all_reference_diagnoses)
-                alternative_diagnoses = self.get_alternative_diagnoses(matched_diagnoses)
-                new_potential_diagnoses = new_potential_diagnoses.union(alternative_diagnoses)
-            current_potential_diagnoses = processed_extracted_info['potential diagnoses'][-1] \
-                if len(processed_extracted_info['potential diagnoses']) > 0 else set()
-            current_potential_diagnoses = sorted(list(
-                set(current_potential_diagnoses).union(new_potential_diagnoses)))
+            if self.limit_options_with_llm:
+                new_potential_diagnoses = differential_diagnoses.union(risks)
+                if self.match_potential_diagnoses:
+                    new_potential_diagnoses = self.get_matched_diagnoses(new_potential_diagnoses, self.all_reference_diagnoses)
+                if self.include_alternative_diagnoses:
+                    # if including alternatives, expand the list by adding anything that appears in the same line (in the
+                    # alternatives) as something that matched
+                    matched_diagnoses = new_potential_diagnoses if self.match_potential_diagnoses else \
+                        self.get_matched_diagnoses(new_potential_diagnoses, self.all_reference_diagnoses)
+                    alternative_diagnoses = self.get_alternative_diagnoses(matched_diagnoses)
+                    new_potential_diagnoses = new_potential_diagnoses.union(alternative_diagnoses)
+                current_potential_diagnoses = processed_extracted_info['potential diagnoses'][-1] \
+                    if len(processed_extracted_info['potential diagnoses']) > 0 else set()
+                current_potential_diagnoses = sorted(list(
+                    set(current_potential_diagnoses).union(new_potential_diagnoses)))
+            else:
+                current_potential_diagnoses = processed_extracted_info['potential diagnoses'][-1] \
+                    if len(processed_extracted_info['potential diagnoses']) > 0 else \
+                    self.all_reference_diagnoses
             # eliminate anything that matches with a past target
             if len(current_potential_diagnoses) > 0 and len(processed_extracted_info['past target diagnoses'][-1]) > 0:
                 is_match, best_match = self.is_match(
@@ -300,10 +320,13 @@ class EHRDiagnosisEnv(gym.Env):
     @property
     def _current_options(self):
         if self._evidence_is_retrieved or not self.add_risk_factor_queries:
-            return self._extracted_information['potential diagnoses'][self._current_report_index]
+            return self._extracted_information[
+                'potential diagnoses'][self._current_report_index]
         else:
-            return self._extracted_information['potential diagnoses'][self._current_report_index] \
-                + self._extracted_information['risk factors'][self._current_report_index]
+            return self._extracted_information[
+                'potential diagnoses'][self._current_report_index] \
+                + self._extracted_information[
+                    'risk factors'][self._current_report_index]
 
     @property
     def _current_option_types(self):
@@ -390,12 +413,15 @@ class EHRDiagnosisEnv(gym.Env):
             self.action_space = spaces.Box(
                 low=-float('inf'), high=float('inf'), shape=(len(self._current_options),))
         observation = self._get_obs()
-        info = {'max_timesteps': (len(self._all_reports) - self._current_report_index) * 2,
-                'current_targets': self._current_targets,
-                'current_report': self._current_report_index,
-                'future_true_positives': set().union(
-                    *self._extracted_information['true positives'][self._current_report_index:]),
-                'past_targets': self._extracted_information['past target diagnoses'][self._current_report_index]}
+        info = {
+            'max_timesteps': (len(self._all_reports) - self._current_report_index) * 2,
+            'current_targets': self._current_targets,
+            'target_countdown':
+                self._extracted_information['target diagnosis countdown'][self._current_report_index],
+            'current_report': self._current_report_index,
+            'future_true_positives': set().union(
+                *self._extracted_information['true positives'][self._current_report_index:]),
+            'past_targets': self._extracted_information['past target diagnoses'][self._current_report_index]}
         if len([t for t in self._current_option_types if t == 'diagnosis']) < 2 and self.verbosity >= 2:
             print('Environment is dead because there is less than 2 differential diagnoses. '
                   'You can either monitor for this by checking with env.is_truncated(obs, info), '
@@ -494,7 +520,6 @@ class EHRDiagnosisEnv(gym.Env):
             types = [t for _, t in current_options[:self.top_k_evidence]]
             self._update_evidence(query_terms, types)
             reward = 0
-            terminated = False
             self._evidence_is_retrieved = True
         else:
             is_match, best_match, reward = self.reward_per_item(
@@ -509,20 +534,29 @@ class EHRDiagnosisEnv(gym.Env):
             while move_to_next_report:
                 self._current_report_index += 1
                 self._evidence_is_retrieved = False
-                terminated = self._current_report_index == len(self._all_reports) - 1
-                if terminated:
+                if self._current_report_index >= len(self._all_reports) - 1:
                     break
                 self.action_space = spaces.Box(
                     low=-float('inf'), high=float('inf'), shape=(len(self._current_options),))
                 move_to_next_report = len(self._current_options) < 2
         observation = self._get_obs()
         info['current_targets'] = self._current_targets
+        info['target_countdown'] = \
+            self._extracted_information['target diagnosis countdown'][self._current_report_index]
         info['current_report'] = self._current_report_index
         info['future_true_positives'] = set().union(
             *self._extracted_information['true positives'][self._current_report_index:])
         info['past_targets'] = self._extracted_information['past target diagnoses'][self._current_report_index]
+        terminated = self.is_terminated(observation, info)
         truncated = self.is_truncated(observation, info)
         return observation, reward, terminated, truncated, info
+
+    def is_terminated(self, obs, info):
+        # the last observation should be of the last report
+        # no action is taken on this observation, so is_terminated is
+        # true
+        return not obs['evidence_is_retrieved'] and \
+            info['current_report'] >= len(self._all_reports) - 1
 
     def is_truncated(self, obs, info):
         options = pd.read_csv(io.StringIO(obs['options']))
