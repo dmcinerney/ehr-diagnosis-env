@@ -15,7 +15,7 @@ from importlib.resources import files
 import pickle as pkl
 
 
-# TODO: add in a more specific manual list of alternative diagnoses
+# TODO: add a "none of the above" option to the potential diagnoses and the targets?
 # TODO: remove all '.' when reading the alternative diagnoses csv
 
 
@@ -142,6 +142,22 @@ class EHRDiagnosisEnv(gym.Env):
 
     def set_limit_targets_to(self, limit_targets_to):
         self.limit_targets_to = limit_targets_to
+    
+    def run_llm_extraction(
+            self, text, query_names, post_processing, replace_strings=None):
+        # replace strings could be a list of string pairs (2-tuples)
+        # that need to be swapped out in the query
+        def replace_strings_func(string):
+            if replace_strings is not None:
+                for s1, s2 in replace_strings:
+                    string = string.replace(s1, s2)
+            return string
+        out = self.model.query(
+            tuple(text for _ in range(len(query_names))),
+            tuple(replace_strings_func(queries[query_name])
+                  for query_name in query_names))
+        return [output if func is None else func(output)
+                for func, output in zip(post_processing, out['output'])]
 
     def extract_info(self, reports):
         extracted_information = {
@@ -152,33 +168,39 @@ class EHRDiagnosisEnv(gym.Env):
             'confident diagnoses': [],
         }
         for i, row in self.progress_bar(
-                reports.iterrows(), total=len(reports), desc='extracting information from reports'):
+                reports.iterrows(), total=len(reports),
+                desc='extracting information from reports'):
             first_queries = [
-                'differential diagnoses', 'risk prediction', 'presenting complaint exists',
-                'confident diagnosis exists']
-            out = self.model.query(
-                tuple(row.text for _ in range(len(first_queries))),
-                tuple(queries[query_name] for query_name in first_queries))
-            extracted_information['differential diagnoses'].append(process_set_output(out['output'][0]))
-            extracted_information['risk prediction'].append(process_set_output(out['output'][1]))
-            presenting_complaint_exists = process_string_output(out['output'][2])
-            if presenting_complaint_exists == 'yes':
-                out_temp = self.model.query((row.text,), (queries['presenting complaint'],))
-                extracted_information['presenting complaint'].append(process_string_output(out_temp['output'][0]))
-                out_temp = self.model.query(
-                    ('',),
-                    (queries['differentials from complaint'].replace('<presenting complaint>', out_temp['output'][0]),))
-                extracted_information['differentials from complaint'].append(process_set_output(out_temp['output'][0]))
+                'differential diagnoses', 'risk prediction',
+                'presenting complaint exists', 'confident diagnosis exists']
+            post_processing = [
+                process_set_output, process_set_output, process_string_output,
+                process_string_output]
+            dd, rp, pce, cde = self.run_llm_extraction(
+                row.text, first_queries, post_processing)
+            extracted_information['differential diagnoses'].append(dd)
+            extracted_information['risk prediction'].append(rp)
+            if pce == 'yes':
+                pc, = self.run_llm_extraction(
+                    row.text, ['presenting complaint'], [None])
+                extracted_information['presenting complaint'].append(
+                    process_string_output(pc))
+                dfc, = self.run_llm_extraction(
+                    '', ['differentials from complaint'], [process_set_output],
+                    replace_strings=[('<presenting complaint>', pc)])
+                extracted_information['differentials from complaint'].append(
+                    dfc)
             else:
                 extracted_information['presenting complaint'].append(None)
-                extracted_information['differentials from complaint'].append(set())
-            confident_diagnosis_exists = process_string_output(out['output'][3])
-            if confident_diagnosis_exists == 'yes':
-                out_temp = self.model.query((row.text,), (queries['confident diagnosis'],))
-                out_temp = self.model.query(
-                    ('',),
-                    (queries['confident diagnoses extracted'].replace('<confident diagnosis>', out_temp['output'][0]),))
-                extracted_information['confident diagnoses'].append(process_set_output(out_temp['output'][0]))
+                extracted_information['differentials from complaint'].append(
+                    set())
+            if cde == 'yes':
+                cd, = self.run_llm_extraction(
+                    row.text, ['confident diagnosis'], [None])
+                cds, = self.run_llm_extraction(
+                    '', ['confident diagnoses extracted'], [process_set_output],
+                    replace_strings=[('<confident diagnosis>', cd)])
+                extracted_information['confident diagnoses'].append(cds)
             else:
                 extracted_information['confident diagnoses'].append(set())
         return extracted_information
@@ -242,6 +264,7 @@ class EHRDiagnosisEnv(gym.Env):
                 current_potential_diagnoses = processed_extracted_info['potential diagnoses'][-1] \
                     if len(processed_extracted_info['potential diagnoses']) > 0 else \
                     self.all_reference_diagnoses
+                current_potential_diagnoses = sorted(list(current_potential_diagnoses))
             # eliminate anything that matches with a past target
             if len(current_potential_diagnoses) > 0 and len(processed_extracted_info['past target diagnoses'][-1]) > 0:
                 is_match, best_match = self.is_match(
@@ -389,8 +412,12 @@ class EHRDiagnosisEnv(gym.Env):
                 self._all_reports = self._all_reports[:options['max_reports_considered']]
             # if indexing into the stored instances use a cache to prevent lots of extraction calls when resetting an
             # environment to a previously seen instance
-            if index not in self._extracted_information_cache.keys():
-                self._extracted_information_cache[index] = self.extract_info(self._all_reports)
+            if index not in self._extracted_information_cache.keys() or \
+                    len(self._all_reports) > \
+                    len(next(iter(
+                    self._extracted_information_cache[index].values()))):
+                self._extracted_information_cache[index] = self.extract_info(
+                    self._all_reports)
                 if self.cache_path is not None:
                     with open(os.path.join(self.cache_path, f'cached_instance_{index}.pkl'), 'wb') as f:
                         pkl.dump({index: self._extracted_information_cache[index]}, f)
