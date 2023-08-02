@@ -32,7 +32,9 @@ class EHRDiagnosisEnv(gym.Env):
         :param top_k_evidence: an int determining how many diagnoses for which to query evidence
         """
         self._all_instances = None
+        self._index = None
         self._extracted_information_cache = None
+        self._evidence_cache = None
         self.cache_path = None
         if instances is not None:
             self.set_instances(instances, cache_path=cache_path)
@@ -89,6 +91,7 @@ class EHRDiagnosisEnv(gym.Env):
 
         # a running dictionary of dictionaries keeping track of retrieved evidence for each diagnosis for each report
         self._current_evidence = None
+        self._current_cached_evidence = None
 
         self._all_reports = None
         self._extracted_information = None
@@ -128,21 +131,37 @@ class EHRDiagnosisEnv(gym.Env):
     def set_instances(self, instances, cache_path=None):
         self._all_instances = instances
         self._extracted_information_cache = {}
+        self._evidence_cache = {}
         self.cache_path = cache_path
         if self.cache_path is not None:
             if not os.path.exists(self.cache_path):
                 os.mkdir(self.cache_path)
-            for file in os.listdir(self.cache_path):
+                os.mkdir(os.path.join(self.cache_path, 'extracted_info'))
+                os.mkdir(os.path.join(self.cache_path, 'evidence'))
+            for file in os.listdir(os.path.join(
+                    self.cache_path, 'extracted_info')):
                 if file.startswith('cached_instance_'):
-                    with open(os.path.join(self.cache_path, file), 'rb') as f:
+                    with open(os.path.join(
+                            self.cache_path, 'extracted_info', file), 'rb') \
+                            as f:
                         self._extracted_information_cache.update(pkl.load(f))
+            for file in os.listdir(os.path.join(
+                    self.cache_path, 'evidence')):
+                if file.startswith('cached_instance_'):
+                    with open(os.path.join(
+                            self.cache_path, 'evidence', file), 'rb') \
+                            as f:
+                        self._evidence_cache.update(pkl.load(f))
 
     def get_cached_instances(self):
         return self._extracted_information_cache.keys()
 
+    def get_cached_instances_with_queries(self):
+        return self._evidence_cache.keys()
+
     def set_limit_targets_to(self, limit_targets_to):
         self.limit_targets_to = limit_targets_to
-    
+
     def run_llm_extraction(
             self, text, query_names, post_processing, replace_strings=None):
         # replace strings could be a list of string pairs (2-tuples)
@@ -364,7 +383,8 @@ class EHRDiagnosisEnv(gym.Env):
 
     @property
     def _current_targets(self):
-        targets = self._extracted_information['target diagnoses'][self._current_report_index]
+        targets = self._extracted_information['target diagnoses'][
+            self._current_report_index]
         if self.limit_targets_to is not None:
             targets = [t for t in targets if t in self.limit_targets_to]
         return targets
@@ -390,39 +410,62 @@ class EHRDiagnosisEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         if options is not None and 'reports' in options.keys():
+            self._index = None
             self._all_reports = options['reports']
-            self._all_reports['date'] = pd.to_datetime(self._all_reports['date'])
+            self._all_reports['date'] = pd.to_datetime(
+                self._all_reports['date'])
             self._extracted_information = self.extract_info(self._all_reports)
+            self._current_cached_evidence = None
         else:
             assert self._all_instances is not None
             if options is not None and 'instance_index' in options.keys():
-                index = options['instance_index']
+                self._index = options['instance_index']
             else:
                 # pick a random novel example
-                novel_instances = set(range(len(self._all_instances))).difference(self._seen_instances)
+                novel_instances = set(range(len(
+                    self._all_instances))).difference(self._seen_instances)
                 if len(novel_instances) == 0:
                     print('Gone through all seen examples, resetting epoch!')
                     self.reset_epoch()
-                    novel_instances = set(range(len(self._all_instances))).difference(self._seen_instances)
-                index = np.random.choice(sorted(list(novel_instances)))
+                    novel_instances = set(range(len(
+                        self._all_instances))).difference(self._seen_instances)
+                self._index = np.random.choice(sorted(list(novel_instances)))
             # add picked example to seen examples
-            self._seen_instances.add(index)
-            self._all_reports = pd.read_csv(io.StringIO(self._all_instances.iloc[index].reports), parse_dates=['date'])
-            if options is not None and 'max_reports_considered' in options.keys():
-                self._all_reports = self._all_reports[:options['max_reports_considered']]
-            # if indexing into the stored instances use a cache to prevent lots of extraction calls when resetting an
+            self._seen_instances.add(self._index)
+            self._all_reports = pd.read_csv(io.StringIO(
+                self._all_instances.iloc[self._index].reports),
+                parse_dates=['date'])
+            if options is not None and \
+                    'max_reports_considered' in options.keys():
+                self._all_reports = self._all_reports[
+                    :options['max_reports_considered']]
+            # if indexing into the stored instances use a cache to
+            # prevent lots of extraction calls when resetting an
             # environment to a previously seen instance
-            if index not in self._extracted_information_cache.keys() or \
+            if self._index not in self._extracted_information_cache.keys() or \
                     len(self._all_reports) > \
                     len(next(iter(
-                    self._extracted_information_cache[index].values()))):
-                self._extracted_information_cache[index] = self.extract_info(
-                    self._all_reports)
+                    self._extracted_information_cache[self._index].values()))):
+                self._extracted_information_cache[self._index] = \
+                    self.extract_info(self._all_reports)
                 if self.cache_path is not None:
-                    with open(os.path.join(self.cache_path, f'cached_instance_{index}.pkl'), 'wb') as f:
-                        pkl.dump({index: self._extracted_information_cache[index]}, f)
-            self._extracted_information = self._extracted_information_cache[index]
-        self._extracted_information.update(self._process_extracted_info(self._extracted_information))
+                    with open(os.path.join(
+                            self.cache_path,
+                            f'extracted_info/cached_instance_{self._index}.pkl'
+                            ), 'wb') as f:
+                        pkl.dump({
+                            self._index: self._extracted_information_cache[
+                                self._index]}, f)
+            self._extracted_information = \
+                self._extracted_information_cache[self._index]
+            if self.cache_path is not None:
+                self._current_cached_evidence = \
+                    self._evidence_cache[self._index] \
+                    if self._index in self._evidence_cache.keys() else {}
+            else:
+                self._current_cached_evidence = None
+        self._extracted_information.update(self._process_extracted_info(
+            self._extracted_information))
         # start off with no evidence
         self._current_evidence = {}
         self._evidence_is_retrieved = False
@@ -430,26 +473,35 @@ class EHRDiagnosisEnv(gym.Env):
         self._current_report_index = 0
         self._start_report_index = 0
         self.action_space = spaces.Box(
-            low=-float('inf'), high=float('inf'), shape=(len(self._current_options),))
-        # go to the first note with a nonzero number of potential diagnoses
-        # you should keep increasing the start until you reach at least 2 differential diagnoses
-        # but you have to start before the last report
-        while len(self._current_options) < 2 and self._current_report_index + 1 < len(self._all_reports):
+            low=-float('inf'), high=float('inf'),
+            shape=(len(self._current_options),))
+        # go to the first note with a nonzero number of potential
+        # diagnoses, you should keep increasing the start until you
+        # reach at least 2 differential diagnoses, but you have to start
+        # before the last report
+        while len(self._current_options) < 2 and \
+                self._current_report_index + 1 < len(self._all_reports):
             self._current_report_index += 1
             self._start_report_index += 1
             self.action_space = spaces.Box(
-                low=-float('inf'), high=float('inf'), shape=(len(self._current_options),))
+                low=-float('inf'), high=float('inf'),
+                shape=(len(self._current_options),))
         observation = self._get_obs()
         info = {
-            'max_timesteps': (len(self._all_reports) - self._current_report_index) * 2,
+            'max_timesteps': (
+                len(self._all_reports) - self._current_report_index) * 2,
             'current_targets': self._current_targets,
             'target_countdown':
-                self._extracted_information['target diagnosis countdown'][self._current_report_index],
+                self._extracted_information['target diagnosis countdown'][
+                    self._current_report_index],
             'current_report': self._current_report_index,
             'future_true_positives': set().union(
-                *self._extracted_information['true positives'][self._current_report_index:]),
-            'past_targets': self._extracted_information['past target diagnoses'][self._current_report_index]}
-        if len([t for t in self._current_option_types if t == 'diagnosis']) < 2 and self.verbosity >= 2:
+                *self._extracted_information['true positives'][
+                    self._current_report_index:]),
+            'past_targets': self._extracted_information[
+                'past target diagnoses'][self._current_report_index]}
+        if len([t for t in self._current_option_types if t == 'diagnosis']) \
+                < 2 and self.verbosity >= 2:
             print('Environment is dead because there is less than 2 differential diagnoses. '
                   'You can either monitor for this by checking with env.is_truncated(obs, info), '
                   'or you can perform a dummy action (which will have no effect) and '
@@ -472,15 +524,34 @@ class EHRDiagnosisEnv(gym.Env):
         for q, t in zip(query_terms, types):
             if (q, t) not in self._current_evidence.keys():
                 self._current_evidence[(q, t)] = {}
+            if self._current_cached_evidence is not None and \
+                    (q, t) not in self._current_cached_evidence.keys():
+                self._current_cached_evidence[(q, t)] = {}
         if 'day' not in self._current_evidence.keys():
             self._current_evidence['day'] = {}
+        if self._current_cached_evidence is not None and \
+                'day' not in self._current_cached_evidence.keys():
+            self._current_cached_evidence['day'] = {}
         for i, report_row in self.progress_bar(
                 self._all_reports[:self._current_report_index + 1].iterrows(),
                 total=self._current_report_index + 1):
-            self._current_evidence['day'][i] = (
-                report_row.date - self._all_reports.iloc[self._start_report_index].date).days
+            day = (report_row.date - self._all_reports.iloc[
+                self._start_report_index].date).days
+            self._current_evidence['day'][i] = day
+            # fill in any needed evidence that already exists in the cache
+            if self._current_cached_evidence is not None:
+                if i not in self._current_cached_evidence['day'].keys():
+                    self._current_cached_evidence['day'][i] = day
+                else:
+                    for q, t in zip(query_terms, types):
+                        if (q, t) in self._current_cached_evidence.keys() and \
+                                i in self._current_cached_evidence[
+                                    (q, t)].keys():
+                            self._current_evidence[(q, t)][i] = \
+                                self._current_cached_evidence[(q, t)][i]
             text = report_row.text
-            # only query ones that have been queried before on this report
+            # only query ones that have not been queried before on this
+            # report
             query_terms_temp = [
                 x for x in zip(query_terms, types) if i not in self._current_evidence[x].keys()]
             if len(query_terms_temp) == 0:
@@ -493,12 +564,14 @@ class EHRDiagnosisEnv(gym.Env):
                       for q, t in query_terms_temp)
             )
             query_terms_temp2 = []
-            for diagnosis, evidence_exists_out in zip(query_terms_temp, out['output']):
+            for (q, t), evidence_exists_out in zip(query_terms_temp, out['output']):
                 if process_string_output(evidence_exists_out) == 'yes':
-                    query_terms_temp2.append(diagnosis)
+                    query_terms_temp2.append((q, t))
                 else:
                     # mark that this query has been made but no evidence was found
-                    self._current_evidence[diagnosis][i] = 'no evidence found'
+                    self._current_evidence[(q, t)][i] = 'no evidence found'
+                    if self._current_cached_evidence is not None:
+                        self._current_cached_evidence[(q, t)][i] = 'no evidence found'
             if len(query_terms_temp2) == 0:
                 continue
             out = self.model.query(
@@ -510,6 +583,14 @@ class EHRDiagnosisEnv(gym.Env):
             )
             for (q, t), evidence in zip(query_terms_temp2, out['output']):
                 self._current_evidence[(q, t)][i] = evidence
+                if self._current_cached_evidence is not None:
+                    self._current_cached_evidence[(q, t)][i] = evidence
+        if self._current_cached_evidence is not None:
+            self._evidence_cache[self._index] = self._current_cached_evidence
+            with open(os.path.join(
+                    self.cache_path,
+                    f'evidence/cached_instance_{self._index}.pkl'), 'wb') as f:
+                pkl.dump({self._index: self._current_cached_evidence}, f)
 
     def reward_per_item(self, action, potential_diagnoses, targets):
         # To be consistent, all rewards (regardless of reward type) are assumed to be in log space
@@ -548,6 +629,8 @@ class EHRDiagnosisEnv(gym.Env):
             self._update_evidence(query_terms, types)
             reward = 0
             self._evidence_is_retrieved = True
+            self.action_space = spaces.Box(
+                low=-float('inf'), high=float('inf'), shape=(len(self._current_options),))
         else:
             is_match, best_match, reward = self.reward_per_item(
                 action, self._current_options,
