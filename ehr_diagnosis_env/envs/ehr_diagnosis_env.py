@@ -10,13 +10,9 @@ import pandas as pd
 import io
 import string
 from sentence_transformers import SentenceTransformer, util
-from .. import utils
+from ..utils import default_env_files
 from importlib.resources import files
 import pickle as pkl
-
-
-# TODO: add a "none of the above" option to the potential diagnoses and the targets?
-# TODO: remove all '.' when reading the alternative diagnoses csv
 
 
 class EHRDiagnosisEnv(gym.Env):
@@ -25,9 +21,10 @@ class EHRDiagnosisEnv(gym.Env):
                  fmm_name_or_interface='all-MiniLM-L6-v2', fuzzy_matching_threshold=.85,
                  progress_bar=None, reward_type='continuous_independent', include_alternative_diagnoses=True,
                  num_future_diagnoses_threshold=0, match_confident_diagnoses=True, match_potential_diagnoses=True,
-                 true_positive_minimum=0, cache_path=None, verbosity=2, alternatives_dir=None,
-                 add_risk_factor_queries=True, risk_factors_dir=None, limit_options_with_llm=True,
-                 add_none_of_the_above_option=True):
+                 true_positive_minimum=0, cache_path=None, verbosity=2, alternatives_file=None,
+                 add_risk_factor_queries=True, risk_factors_file=None, limit_options_with_llm=True,
+                 add_none_of_the_above_option=True, use_confident_diagnosis_mapping=True,
+                 confident_diagnosis_mapping_file=None):
         """
         :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
             dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
@@ -56,11 +53,18 @@ class EHRDiagnosisEnv(gym.Env):
         self.true_positive_minimum = true_positive_minimum
         self.cache_path = cache_path
         self.verbosity = verbosity
-        self.alternatives_dir = str(files(utils) / 'alternatives') \
-            if alternatives_dir is None else alternatives_dir
+        self.alternatives_file = str(
+            files(default_env_files) / 'alternatives.txt') \
+            if alternatives_file is None else alternatives_file
         self.add_risk_factor_queries = add_risk_factor_queries
-        self.risk_factors_dir = str(files(utils) / 'risk_factors') \
-            if risk_factors_dir is None else risk_factors_dir
+        self.risk_factors_file = str(
+            files(default_env_files) / 'risk_factors.txt') \
+            if risk_factors_file is None else risk_factors_file
+        self.use_confident_diagnosis_mapping = use_confident_diagnosis_mapping
+        self.confident_diagnosis_mapping_file = str(
+            files(default_env_files) / 'confident_diagnosis_mapping.txt') \
+            if confident_diagnosis_mapping_file is None else \
+            confident_diagnosis_mapping_file
         self.limit_options_with_llm = limit_options_with_llm
         self.add_none_of_the_above_option = add_none_of_the_above_option
         if self.add_none_of_the_above_option:
@@ -115,25 +119,27 @@ class EHRDiagnosisEnv(gym.Env):
         if self.fuzzy_matching_threshold is not None:
             assert fmm_name_or_interface is not None
             if isinstance(fmm_name_or_interface, str):
-                self.fuzzy_matching_model = SentenceTransformer(fmm_name_or_interface)
+                self.fuzzy_matching_model = SentenceTransformer(
+                    fmm_name_or_interface)
             else:
                 self.fuzzy_matching_model = fmm_name_or_interface
-        if self.include_alternative_diagnoses or self.match_confident_diagnoses or self.match_potential_diagnoses:
-            alternatives_dfs = []
-            for file in os.listdir(self.alternatives_dir):
-                if file.endswith('.txt'):
-                    alternatives_dfs.append(pd.read_csv(os.path.join(self.alternatives_dir, file), delimiter='\t'))
-            self.alternatives = pd.concat(alternatives_dfs)
+        if self.include_alternative_diagnoses or \
+                self.match_confident_diagnoses or \
+                self.match_potential_diagnoses:
+            self.alternatives = pd.read_csv(
+                self.alternatives_file, delimiter='\t')
             self.alternatives['full_set'] = self.alternatives.apply(
-                lambda r: set([r.diagnosis] + [a.strip() for a in r.alternatives.split(',')]), axis=1)
-        self.all_reference_diagnoses = set().union(*self.alternatives.full_set.to_list()) \
+                lambda r: set([r.diagnosis] + [
+                    a.strip() for a in r.alternatives.split(',')]), axis=1)
+        self.all_reference_diagnoses = set().union(
+            *self.alternatives.full_set.to_list()) \
             if self.match_confident_diagnoses else None
         if self.add_risk_factor_queries:
-            risk_factors_dfs = []
-            for file in os.listdir(self.risk_factors_dir):
-                if file.endswith('.txt'):
-                    risk_factors_dfs.append(pd.read_csv(os.path.join(self.risk_factors_dir, file), delimiter='\t'))
-            self.risk_factors = pd.concat(risk_factors_dfs)
+            self.risk_factors = pd.read_csv(
+                self.risk_factors_file, delimiter='\t')
+        if self.use_confident_diagnosis_mapping:
+            self.confident_diagnosis_mapping = pd.read_csv(
+                self.confident_diagnosis_mapping_file, delimiter='\t')
 
     def to(self, device):
         if self.model is not None:
@@ -160,6 +166,11 @@ class EHRDiagnosisEnv(gym.Env):
 
     def get_cached_instances(self):
         return self._extracted_information_cache.keys()
+    
+    def get_cached_instance_dataframe(self):
+        return pd.DataFrame({
+            int(k): v for k, v in self._extracted_information_cache.items()
+        }).transpose()
 
     def get_cached_instances_with_queries(self):
         return self._evidence_cache.keys()
@@ -233,7 +244,7 @@ class EHRDiagnosisEnv(gym.Env):
                 extracted_information['confident diagnoses'].append(set())
         return extracted_information
 
-    def _process_extracted_info(self, extracted_information):
+    def process_extracted_info(self, extracted_information):
         processed_extracted_info = {
             'potential diagnoses': [],
             'risk factors': [],
@@ -241,13 +252,24 @@ class EHRDiagnosisEnv(gym.Env):
             'target diagnosis countdown': [],
             'true positives': [],
             'past target diagnoses': [],
+            'is valid timestep': [],
         }
         confident_diagnoses = []
         confident_diagnosis_timepoints = {}
         for i in range(len(next(iter(extracted_information.values())))):
             extracted_targets = extracted_information['confident diagnoses'][i]
+            # do an initial mapping using certain manually created rules
+            # (e.g. the default is to map all things containing
+            # 'cancer' to the target 'cancer').
+            if self.use_confident_diagnosis_mapping:
+                extracted_targets = set([
+                    map_confident_diagnosis(
+                        et, self.confident_diagnosis_mapping)
+                    for et in extracted_targets])
+            # Everthing is then matched to the target list using fuzzy rules
             if self.match_confident_diagnoses:
-                extracted_targets = self.get_matched_diagnoses(extracted_targets, self.all_reference_diagnoses)
+                extracted_targets = self.get_matched_diagnoses(
+                    extracted_targets, self.all_reference_diagnoses)
             confident_diagnoses.append(extracted_targets)
             for target in extracted_targets:
                 if target not in confident_diagnosis_timepoints.keys():
@@ -321,10 +343,18 @@ class EHRDiagnosisEnv(gym.Env):
             else:
                 true_positives = set()
             processed_extracted_info['true positives'].append(true_positives)
+            processed_extracted_info['is valid timestep'].append(
+                len(processed_extracted_info['potential diagnoses'][-1]) >= 2 \
+                and len(processed_extracted_info['target diagnoses'][-1]) >= \
+                    self.num_future_diagnoses_threshold \
+                and len(processed_extracted_info['true positives'][-1]) >= \
+                    self.true_positive_minimum
+            )
         return processed_extracted_info
 
     def _get_obs(self):
-        observed_reports = self._all_reports[self._start_report_index:self._current_report_index + 1]
+        observed_reports = self._all_reports[
+            self._start_report_index:self._current_report_index + 1]
         evidence = pd.DataFrame(self._current_evidence)
         return {
             "reports": observed_reports.to_csv(index=False),
@@ -336,25 +366,37 @@ class EHRDiagnosisEnv(gym.Env):
         }
 
     def is_match(self, xs, ys):
+        xs, ys = list(xs), list(ys)
         if len(ys) == 0:
             return [False for _ in xs], xs
-        if self.fuzzy_matching_threshold is not None:
-            xs = list(xs)
-            ys = list(ys)
+        is_match = [x in ys for x in xs]
+        best_match = xs
+        if self.fuzzy_matching_threshold is not None and not all(is_match):
+            original_indices = [i for i, im in enumerate(is_match) if not im]
+            xs = [xs[i] for i in original_indices]
             embeddings = self.fuzzy_matching_model.encode(xs + ys, convert_to_tensor=True)
             cosine_scores = util.cos_sim(embeddings[:len(xs)], embeddings[len(xs):])
             indices = cosine_scores.argmax(1)
-            return (
-                [cosine_scores[i, index] > self.fuzzy_matching_threshold for i, index in enumerate(indices)],
-                [ys[index] for index in indices])
-        else:
-            return [x in ys for x in xs], xs
+            fuzzy_is_match = [
+                cosine_scores[i, index] > self.fuzzy_matching_threshold
+                for i, index in enumerate(indices)]
+            fuzzy_best_match = [ys[index] for index in indices]
+            for i, fis, fbm in zip(
+                    original_indices, fuzzy_is_match, fuzzy_best_match):
+                is_match[i] = bool(fis.item())
+                best_match[i] = fbm
+        return is_match, best_match
 
     def get_matched_diagnoses(self, terms1, terms2):
         if len(terms1) == 0 or len(terms2) == 0:
             return set()
-        matched, terms = self.is_match(terms1, tuple(terms2))
-        return set([t for m, t in zip(matched, terms) if m])
+        if len(terms1) > len(terms2): # for efficiency
+            terms2 = list(terms2)
+            matched, _ = self.is_match(terms2, terms1)
+            return set([t for m, t in zip(matched, terms2) if m])
+        else:
+            matched, terms = self.is_match(terms1, terms2)
+            return set([t for m, t in zip(matched, terms) if m])
 
     def get_alternative_diagnoses(self, diagnoses, symmetric_and_transitive=True):
         all_alternatives = []
@@ -479,14 +521,17 @@ class EHRDiagnosisEnv(gym.Env):
                     if self._index in self._evidence_cache.keys() else {}
             else:
                 self._current_cached_evidence = None
-        self._extracted_information.update(self._process_extracted_info(
+        self._extracted_information.update(self.process_extracted_info(
             self._extracted_information))
         # start off with no evidence
         self._current_evidence = {}
         self._evidence_is_retrieved = False
-        # TODO: allow one to start the sequence from later on in the ehr
-        self._current_report_index = 0
-        self._start_report_index = 0
+        self._start_report_index = 0 \
+            if options is None or \
+                'start_report_index' not in options.keys() else \
+            options['start_report_index']
+        self._current_report_index = self._start_report_index
+        assert self._current_report_index < len(self._all_reports)
         self.action_space = spaces.Box(
             low=-float('inf'), high=float('inf'),
             shape=(len(self._current_options),))
@@ -497,14 +542,13 @@ class EHRDiagnosisEnv(gym.Env):
         while len(self._current_options) < 2 and \
                 self._current_report_index + 1 < len(self._all_reports):
             self._current_report_index += 1
-            self._start_report_index += 1
-            self.action_space = spaces.Box(
-                low=-float('inf'), high=float('inf'),
-                shape=(len(self._current_options),))
+        self.action_space = spaces.Box(
+            low=-float('inf'), high=float('inf'),
+            shape=(len(self._current_options),))
         observation = self._get_obs()
         info = {
-            'max_timesteps': (
-                len(self._all_reports) - self._current_report_index) * 2,
+            'max_timesteps': sum(self._extracted_information[
+                'is valid timestep'][self._current_report_index:]) * 2,
             'current_targets': self._current_targets,
             'target_countdown':
                 self._extracted_information['target diagnosis countdown'][
@@ -514,7 +558,11 @@ class EHRDiagnosisEnv(gym.Env):
                 *self._extracted_information['true positives'][
                     self._current_report_index:]),
             'past_targets': self._extracted_information[
-                'past target diagnoses'][self._current_report_index]}
+                'past target diagnoses'][self._current_report_index],
+            'past_reports': self._all_reports[:self._start_report_index],
+            'future_reports': self._all_reports[
+                self._current_report_index + 1:],
+        }
         if len([t for t in self._current_option_types if t == 'diagnosis']) \
                 < 2 and self.verbosity >= 2:
             print('Environment is dead because there is less than 2 differential diagnoses. '
@@ -648,7 +696,9 @@ class EHRDiagnosisEnv(gym.Env):
     def step(self, action):
         if not isinstance(action, torch.Tensor):
             action = torch.tensor(action)
-        info = {'max_timesteps': (len(self._all_reports) - self._current_report_index - 1) * 2}
+        info = {
+            'max_timesteps': sum(self._extracted_information[
+                'is valid timestep'][self._current_report_index:]) * 2}
         assert self._current_report_index < len(self._all_reports)
         if not self._evidence_is_retrieved:
             current_options = sort_by_scores(
@@ -690,6 +740,9 @@ class EHRDiagnosisEnv(gym.Env):
                 'true positives'][self._current_report_index:])
         info['past_targets'] = self._extracted_information[
             'past target diagnoses'][self._current_report_index]
+        info['past_reports'] = self._all_reports[:self._start_report_index]
+        info['future_reports'] = self._all_reports[
+            self._current_report_index + 1:]
         terminated = self.is_terminated(observation, info)
         truncated = self.is_truncated(observation, info)
         return observation, reward, terminated, truncated, info
