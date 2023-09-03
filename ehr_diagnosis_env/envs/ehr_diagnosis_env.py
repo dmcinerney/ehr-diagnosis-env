@@ -33,11 +33,12 @@ class EHRDiagnosisEnv(gym.Env):
         self._all_instances = None
         self._index = None
         self._extracted_information_cache = None
+        self._processed_extracted_information_cache = None
         self._evidence_cache = None
         self.cache_path = None
+        self._seen_instances = None
         if instances is not None:
             self.set_instances(instances, cache_path=cache_path)
-        self._seen_instances = set()
         self.top_k_evidence = top_k_evidence
         self.fuzzy_matching_threshold = fuzzy_matching_threshold
         self.progress_bar = progress_bar if progress_bar is not None else tqdm
@@ -149,9 +150,19 @@ class EHRDiagnosisEnv(gym.Env):
 
     def set_instances(self, instances, cache_path=None):
         self._all_instances = instances
+        self._index = None
+        if instances is None:
+            self._extracted_information_cache = None
+            self._processed_extracted_information_cache = None
+            self._evidence_cache = None
+            self.cache_path = None
+            self._seen_instances = None
+            return
         self._extracted_information_cache = {}
+        self._processed_extracted_information_cache = {}
         self._evidence_cache = {}
         self.cache_path = cache_path
+        self._seen_instances = set()
         if self.cache_path is not None:
             if not os.path.exists(self.cache_path):
                 os.mkdir(self.cache_path)
@@ -161,19 +172,34 @@ class EHRDiagnosisEnv(gym.Env):
                 self._extracted_information_cache,
                 os.path.join(self.cache_path, 'extracted_info'))
             update_cache_from_disk(
+                self._processed_extracted_information_cache,
+                os.path.join(self.cache_path, 'processed_extracted_info'))
+            update_cache_from_disk(
                 self._evidence_cache,
                 os.path.join(self.cache_path, 'evidence'))
 
     def get_cached_instances(self):
         return self._extracted_information_cache.keys()
-    
-    def get_cached_instance_dataframe(self):
-        return pd.DataFrame({
-            int(k): v for k, v in self._extracted_information_cache.items()
-        }).transpose()
+
+    def get_processed_cached_instances(self):
+        return self._processed_extracted_information_cache.keys()
 
     def get_cached_instances_with_queries(self):
         return self._evidence_cache.keys()
+
+    def get_cached_instance_dataframe(self):
+        extracted_info = pd.DataFrame({
+            int(k): v for k, v in self._extracted_information_cache.items()
+        }).transpose()
+        processed_extracted_info = pd.DataFrame({
+            int(k): v for k, v in
+            self._processed_extracted_information_cache.items()
+        }).transpose()
+        evidence = pd.DataFrame({
+            int(k): v for k, v in self._evidence_cache.items()
+        }).transpose()
+        return pd.concat(
+            [extracted_info, processed_extracted_info, evidence], axis=1)
 
     def run_llm_extraction(
             self, text, query_names, post_processing, replace_strings=None):
@@ -194,7 +220,8 @@ class EHRDiagnosisEnv(gym.Env):
                 tuple(text for _ in range(len(query_names[slc]))),
                 tuple(processed_query_templates[slc]))
             outputs = [output if func is None else func(output)
-                       for func, output in zip(post_processing[slc], out['output'])]
+                       for func, output in zip(
+                           post_processing[slc], out['output'])]
             all_outputs += outputs
         return all_outputs
 
@@ -521,8 +548,24 @@ class EHRDiagnosisEnv(gym.Env):
                     if self._index in self._evidence_cache.keys() else {}
             else:
                 self._current_cached_evidence = None
-        self._extracted_information.update(self.process_extracted_info(
-            self._extracted_information))
+        if self._index not in \
+                self._processed_extracted_information_cache.keys() or \
+                len(self._all_reports) > \
+                len(next(iter(
+                self._processed_extracted_information_cache[
+                    self._index].values()))):
+            self._processed_extracted_information_cache[self._index] = \
+                self.process_extracted_info(self._extracted_information)
+            if self.cache_path is not None:
+                with open(os.path.join(
+                        self.cache_path, 'processed_extracted_info',
+                        f'cached_instance_{self._index}.pkl'), 'wb') as f:
+                    pkl.dump({
+                        self._index:
+                            self._processed_extracted_information_cache[
+                                self._index]}, f)
+        self._extracted_information.update(
+            self._processed_extracted_information_cache[self._index])
         # start off with no evidence
         self._current_evidence = {}
         self._evidence_is_retrieved = False
@@ -562,6 +605,7 @@ class EHRDiagnosisEnv(gym.Env):
             'past_reports': self._all_reports[:self._start_report_index],
             'future_reports': self._all_reports[
                 self._current_report_index + 1:],
+            'instance_index': self._index,
         }
         if len([t for t in self._current_option_types if t == 'diagnosis']) \
                 < 2 and self.verbosity >= 2:
@@ -615,48 +659,52 @@ class EHRDiagnosisEnv(gym.Env):
             text = report_row.text
             # only query ones that have not been queried before on this
             # report
-            query_terms_temp = [
-                x for x in zip(query_terms, types) if i not in self._current_evidence[x].keys()]
+            query_terms_temp = []
+            for q, t in zip(query_terms, types):
+                if i in self._current_evidence[(q, t)].keys():
+                    continue
+                if t == 'diagnosis':
+                    query_terms_temp.append(('evidence exists', q, t))
+                    query_terms_temp.append(
+                        ('evidence has condition exists', q, t))
+                else:
+                    query_terms_temp.append(('evidence via rf exists', q, t))
             if len(query_terms_temp) == 0:
                 continue
             evidence_exists_outs = self.run_llm_extraction(
-                text, [
-                    'evidence exists' if t == 'diagnosis' else
-                    'evidence via rf exists' for _, t in query_terms_temp
-                ], [process_string_output] * len(query_terms_temp),
+                text, [template for template, _, _ in query_terms_temp],
+                [process_string_output] * len(query_terms_temp),
                 replace_strings=[
-                    [('<evidence query>', q)] if t == 'diagnosis' else
-                    [('<evidence rf query>', q)] for q, t in query_terms_temp
-                ])
+                    [('<query>', q)] for _, q, _ in query_terms_temp],)
             query_terms_temp2 = []
-            for (q, t), evidence_exists_out in zip(
+            for (template, q, t), evidence_exists_out in zip(
                     query_terms_temp, evidence_exists_outs):
                 if evidence_exists_out == 'yes':
-                    query_terms_temp2.append((q, t))
+                    query_terms_temp2.append((
+                        ' '.join(template.split()[:-1] + ['retrieval']), q, t))
                 else:
-                    # mark that this query has been made but no evidence was found
+                    # mark that this query has been made but no evidence
+                    # was found
                     self._current_evidence[(q, t)][i] = 'no evidence found'
                     if self._current_cached_evidence is not None:
-                        self._current_cached_evidence[(q, t)][i] = 'no evidence found'
+                        self._current_cached_evidence[(q, t)][i] = \
+                            'no evidence found'
             if len(query_terms_temp2) == 0:
                 continue
-            # out = self.model.query(
-            #     tuple(text for _ in query_terms_temp2),
-            #     tuple(queries['evidence retrieval'].replace('<evidence query>', q)
-            #           if t == 'diagnosis' else
-            #           queries['evidence via rf retrieval'].replace('<evidence rf query>', q)
-            #           for q, t in query_terms_temp2)
-            # )
             evidence_outs = self.run_llm_extraction(
-                text, [
-                    'evidence retrieval' if t == 'diagnosis' else
-                    'evidence via rf retrieval' for _, t in query_terms_temp
-                ], [None] * len(query_terms_temp),
+                text, [template for template, _, _ in query_terms_temp2],
+                [None] * len(query_terms_temp2),
                 replace_strings=[
-                    [('<evidence query>', q)] if t == 'diagnosis' else
-                    [('<evidence rf query>', q)] for q, t in query_terms_temp
-                ])
-            for (q, t), evidence in zip(query_terms_temp2, evidence_outs):
+                    [('<query>', q)] for _, q, t in query_terms_temp2],)
+            for (template, q, t), evidence in zip(
+                    query_terms_temp2, evidence_outs):
+                evidence_prefix = 'Signs: ' \
+                    if template == 'evidence has condition retrieval' else ''
+                current_evidence = self._current_evidence[(q, t)][i] + '\n' \
+                    if i in self._current_evidence[(q, t)].keys() and \
+                    self._current_evidence[(q, t)][i] != 'no evidence found' \
+                    else ''
+                evidence = current_evidence + evidence_prefix +  evidence
                 self._current_evidence[(q, t)][i] = evidence
                 if self._current_cached_evidence is not None:
                     self._current_cached_evidence[(q, t)][i] = evidence
@@ -743,6 +791,7 @@ class EHRDiagnosisEnv(gym.Env):
         info['past_reports'] = self._all_reports[:self._start_report_index]
         info['future_reports'] = self._all_reports[
             self._current_report_index + 1:]
+        info['instance_index'] = self._index
         terminated = self.is_terminated(observation, info)
         truncated = self.is_truncated(observation, info)
         return observation, reward, terminated, truncated, info

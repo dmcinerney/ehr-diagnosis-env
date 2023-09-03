@@ -1,4 +1,4 @@
 diagnosis	risk factors
-pneumonia	a stroke, trouble swallowing, a compromised immune system, a high white blood cell count, no steroid use, a fever
-pulmonary edema	a low ejection fraction, a heart attack
+pneumonia	a stroke, trouble swallowing, a compromised immune system, a high white blood cell count, a fever
+pulmonary edema	a low ejection fraction, a heart attack, steroid use
 cancer	back pain, neuralogical problems, a history of smoking, night sweats, unexplained weight loss, a chronic cough with blood, large neck lymph nodes, a loss of appetite, jaundice, chest pain, hoarseness, tiredness, wheezing

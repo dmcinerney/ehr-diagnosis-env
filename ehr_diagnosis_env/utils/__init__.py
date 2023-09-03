@@ -24,8 +24,6 @@ def update_cache_from_disk(cache, cache_dir):
                 cache.update(pkl.load(f))
             num_loaded += 1
         except Exception as e:
-            # print(e)
-            import pdb; pdb.set_trace()
             # delete any files you can't load
             os.remove(os.path.join(cache_dir, file))
             num_deleted += 1

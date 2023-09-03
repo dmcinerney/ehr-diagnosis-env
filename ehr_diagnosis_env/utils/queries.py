@@ -51,19 +51,61 @@ Answer: """,
 Question: Based on this note, provide a list of conditions the patient may be at risk for.
 
 Answer: """,
+#     'evidence exists': \
+# """Read the following report:
+
+# <input>
+
+# Question: Is the patient at risk of <evidence query>? Choice: -Yes -No
+# # Answer: """,
+#     'evidence retrieval': \
+# """Read the following report:
+
+# <input>
+
+# Answer step by step: Why is the patient at risk of <evidence query>?
+# Answer: """,
     'evidence exists': \
-"""Read the following report:
+"""Read the following clinical note of a patient:
 
 <input>
 
-Question: Is the patient at risk of <evidence query>? Choice: -Yes -No
+Question: Is the patient at risk of <query>? Choice: -Yes -No
 Answer: """,
     'evidence retrieval': \
+"""Read the following clinical note of a patient:
+
+<input>
+
+Answer step by step: based on the note, why is the patient at risk of <query>?
+Answer: """,
+    'evidence has condition exists': \
+"""Read the following clinical note of a patient:
+
+<input>
+
+Question: Does the patient have <query>? Choice: -Yes -No
+Answer: """,
+    'evidence has condition retrieval': \
+"""Read the following clinical note of a patient:
+
+<input>
+
+Question: Extract signs of <query> from the note.
+Answer: """,
+    'evidence via rf exists': \
 """Read the following report:
 
 <input>
 
-Answer step by step: Why is the patient at risk of <evidence query>?
+Question: Does the patient have <query>? Choice: -Yes -No
+Answer: """,
+    'evidence via rf retrieval': \
+"""Read the following report:
+
+<input>
+
+What evidence is there that the patient has <query>?
 Answer: """,
     'presenting complaint exists': \
 """Read the following report:
@@ -81,20 +123,6 @@ What is the patient's presenting complaint?
 Answer: """,
     'differentials from complaint': \
 """A patient presents with <presenting complaint>. Provide a list of the differential diagnoses a clinician should consider.
-Answer: """,
-    'evidence via rf exists': \
-"""Read the following report:
-
-<input>
-
-Question: Does the patient have <evidence rf query>? Choice: -Yes -No
-Answer: """,
-    'evidence via rf retrieval': \
-"""Read the following report:
-
-<input>
-
-What evidence is there that the patient has <evidence rf query>?
 Answer: """,
 }
 
