@@ -33,15 +33,13 @@ Answer: """,
 <input>
 
 Answer step by step: What is the correct diagnosis of the patient's condition?
-
 Answer: """,
     'confident diagnoses extracted': \
 """Here is a diagnosis of a patient:
 
 <confident diagnosis>
 
-Question: Based on this diagnosis, provide a list of diagnostic terms.
-
+Question: Provide a list of diagnostic terms or write none.
 Answer: """,
     'risk prediction': \
 """Here an admission note:

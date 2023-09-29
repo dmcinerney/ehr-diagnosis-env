@@ -16,7 +16,7 @@ env = gymnasium.make(
     model_name='google/flan-t5-xxl'
 )
 observation, info = env.reset(options={'instance_index': instance_num})
-while env.is_truncated(observation, info):
+while not info['is_valid_timestep']:
     instance_num += 1
     observation, info = env.reset(options={'instance_index': instance_num})
 cumulative_reward = 0

@@ -1,2 +1,10 @@
 rule_type	x	y
 contains	cancer	cancer
+contains	carcinoma	cancer
+contains	malignant	cancer
+contains	metastasis	cancer
+contains	metastases	cancer
+contains	metastatic	cancer
+contains	pneumonia	pneumonia
+contains	pulmonary edema	pulmonary edema
+contains	heart failure	pulmonary edema

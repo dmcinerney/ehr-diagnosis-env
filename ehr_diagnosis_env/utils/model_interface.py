@@ -37,10 +37,17 @@ class ModelInterface:
         outputs = self.model.generate(
             tokenized_input.input_ids.to("cuda"),
             max_new_tokens=max_new_tokens,
+            return_dict_in_generate=True,
+            output_scores=True,
         )
+        log_probs = torch.stack(outputs.scores, dim=1).log_softmax(-1)
+        gen_log_probs = torch.gather(
+            log_probs, 2, outputs.sequences[:, 1:, None]).squeeze(-1)
         return {
             'input': self.tokenizer.batch_decode(tokenized_input.input_ids),
-            'output': self.tokenizer.batch_decode(outputs, skip_special_tokens=True),
+            'output': self.tokenizer.batch_decode(
+                outputs.sequences, skip_special_tokens=True),
+            'confidence': torch.exp(gen_log_probs.mean(-1)).tolist(),
         }
 
 

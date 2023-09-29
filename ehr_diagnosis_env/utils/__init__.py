@@ -4,6 +4,7 @@ from .queries import *
 import os
 import pickle as pkl
 from tqdm import tqdm
+import warnings
 
 
 def sort_by_scores(items, scores):
@@ -37,9 +38,19 @@ def map_confident_diagnosis(diagnosis, mapping_df):
     # it to y
     matched_rules = contains_rules[
         contains_rules.x.apply(lambda x: x in diagnosis)]
-    if len(matched_rules) == 0:
-        return diagnosis
-    elif len(matched_rules) == 1:
-        return matched_rules.iloc[0].y
+    matched_targets = set(matched_rules.y)
+    if len(matched_targets) == 0:
+        return set([diagnosis])
     else:
-        raise Exception
+        if len(matched_targets) > 1:
+            warnings.warn(
+                f'The diagnosis \"{diagnosis}\" matched to maps to mulitple '
+                'targets: {}. Using all.'.format(', '.join(matched_targets)))
+        return matched_targets
+
+
+def confident_diagnosis_preprocessing(report_text):
+    new_report_text = '\n'.join(
+        [line for line in report_text.split('\n')
+         if not line.lower().strip().startswith('admitting diagnosis: ')])
+    return new_report_text
