@@ -772,7 +772,8 @@ class EHRDiagnosisEnv(gym.Env):
         self._init_evidence_if_necessary(query_terms, types)
         for i, report_row in self.progress_bar(
                 self._all_reports[:self._current_report_index + 1].iterrows(),
-                total=self._current_report_index + 1):
+                total=self._current_report_index + 1,
+                desc='updating evidence'):
             day = (report_row.date - self._all_reports.iloc[
                 self._start_report_index].date).days
             self._current_evidence['day'][i] = day
