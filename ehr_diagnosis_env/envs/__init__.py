@@ -1,1 +1,3 @@
 from ehr_diagnosis_env.envs.ehr_diagnosis_env import EHRDiagnosisEnv
+from ehr_diagnosis_env.envs.flan_env import FlanEHRDiagnosisEnv
+from ehr_diagnosis_env.envs.mistral_env import MistralEHRDiagnosisEnv

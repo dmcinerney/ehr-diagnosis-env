@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 
 import gymnasium as gym
@@ -10,27 +11,52 @@ import pandas as pd
 import io
 import string
 from sentence_transformers import SentenceTransformer, util
+
+from ehr_diagnosis_env.utils.llm_queries.query import BatchedQueries
 from ..utils import default_env_files
 from importlib.resources import files
 import pickle as pkl
 
 
 class EHRDiagnosisEnv(gym.Env):
-    def __init__(self, instances=None, top_k_evidence=3, llm_name_or_interface='google/flan-t5-xxl',
-                 llm_max_batch_size=10,
-                 fmm_name_or_interface='all-MiniLM-L6-v2', fuzzy_matching_threshold=.85,
-                 progress_bar=None, reward_type='continuous_independent', include_alternative_diagnoses=True,
-                 num_future_diagnoses_threshold=0, match_confident_diagnoses=True, match_potential_diagnoses=True,
-                 true_positive_minimum=0, cache_path=None, verbosity=2, alternatives_file=None,
-                 add_risk_factor_queries=True, risk_factors_file=None, limit_options_with_llm=True,
-                 add_none_of_the_above_option=True, use_confident_diagnosis_mapping=True,
-                 confident_diagnosis_mapping_file=None, subset=None, stop_after_first_target=True,
-                 skip_instances_with_gt_n_reports=None, include_past_reports_in_obs=True,
-                 exclude_evidence=False):
+    def __init__(
+            self,
+            *,
+            instances=None,
+            top_k_evidence=3,
+            llm_name_or_interface=None,
+            llm_max_batch_size=10,
+            fmm_name_or_interface='all-MiniLM-L6-v2',
+            fuzzy_matching_threshold=.85,
+            progress_bar=None,
+            reward_type='continuous_independent',
+            include_alternative_diagnoses=True,
+            num_future_diagnoses_threshold=0,
+            match_confident_diagnoses=True,
+            match_potential_diagnoses=True,
+            true_positive_minimum=0,
+            cache_path=None,
+            verbosity=2,
+            alternatives_file=None,
+            add_risk_factor_queries=True,
+            risk_factors_file=None,
+            limit_options_with_llm=True,
+            add_none_of_the_above_option=False,
+            use_confident_diagnosis_mapping=True,
+            confident_diagnosis_mapping_file=None,
+            subset=None,
+            stop_after_first_target=True,
+            skip_instances_with_gt_n_reports=None,
+            include_past_reports_in_obs=True,
+            exclude_evidence=False,
+            add_diagnosis_options_from_caches=None):
         """
-        :param instances: A dataframe of patient instances with one column of called 'reports' where each element is a
-            dataframe of reports ordered by date. The dataframes are in string csv format with one column called 'text'.
-        :param top_k_evidence: an int determining how many diagnoses for which to query evidence
+        :param instances: A dataframe of patient instances with one
+            column of called 'reports' where each element is a
+            dataframe of reports ordered by date. The dataframes are in
+            string csv format with one column called 'text'.
+        :param top_k_evidence: an int determining how many diagnoses for
+            which to query evidence
         """
         self._all_instances = None
         self._index = None
@@ -46,13 +72,17 @@ class EHRDiagnosisEnv(gym.Env):
         self.fuzzy_matching_threshold = fuzzy_matching_threshold
         self.progress_bar = progress_bar if progress_bar is not None else tqdm
         self.reward_type = reward_type
-        assert self.reward_type in ['continuous_independent', 'continuous_dependent', 'ranking']
-        # add addition potential diagnoses that represent alternatives to any of the original ones
+        assert self.reward_type in [
+            'continuous_independent', 'continuous_dependent', 'ranking']
+        # add addition potential diagnoses that represent alternatives
+        # to any of the original ones
         self.include_alternative_diagnoses = include_alternative_diagnoses
         self.num_future_diagnoses_threshold = num_future_diagnoses_threshold
-        # restrict confident diagnoses to those that match one of the diagnoses in the alternatives list
+        # restrict confident diagnoses to those that match one of the
+        # diagnoses in the alternatives list
         self.match_confident_diagnoses = match_confident_diagnoses
-        # restrict potential diagnoses to those that match one of the diagnoses in the alternatives list
+        # restrict potential diagnoses to those that match one of the
+        # diagnoses in the alternatives list
         self.match_potential_diagnoses = match_potential_diagnoses
         self.true_positive_minimum = true_positive_minimum
         self.stop_after_first_target = stop_after_first_target
@@ -82,17 +112,25 @@ class EHRDiagnosisEnv(gym.Env):
                 true_positive_minimum > 0
         self.include_past_reports_in_obs = include_past_reports_in_obs
         self.exclude_evidence = exclude_evidence
+        self.add_diagnosis_options_from_caches = \
+            add_diagnosis_options_from_caches
+        self.additional_diagnosis_options = None
+        if self.add_diagnosis_options_from_caches is not None:
+            self.get_diagnosis_options_from_caches()
 
         self.seed = None
         self.action_space = spaces.Box(low=-float('inf'), high=float('inf'))
         observation_space_dict = {
                 # reports seen up to the current timestep in csv format
                 "reports": spaces.Text(10000, charset=string.printable),
-                # potential diagnoses seen up to the current timestep in csv format
+                # potential diagnoses seen up to the current timestep in
+                # csv format
                 "options": spaces.Text(10000, charset=string.printable),
-                # evidence extracted from previous reports for each diagnosis in csv format
+                # evidence extracted from previous reports for each
+                # diagnosis in csv format
                 "evidence": spaces.Text(10000, charset=string.printable),
-                # whether the evidence for this report was retrieved (determines what kind of action you are taking)
+                # whether the evidence for this report was retrieved
+                # (determines what kind of action you are taking)
                 "evidence_is_retrieved": spaces.Discrete(2),
             }
         if self.include_past_reports_in_obs:
@@ -100,18 +138,22 @@ class EHRDiagnosisEnv(gym.Env):
                 10000, charset=string.printable)
         self.observation_space = spaces.Dict(observation_space_dict)
 
-        # denotes the index of the currently observed note, leave to the reset method to set this
+        # denotes the index of the currently observed note, leave to the
+        # reset method to set this
         self._current_report_index = None
 
         # denotes the report index at which observations start
-        # (reports before this index are never directly shown to the agent but are used during evidence retrieval)
+        # (reports before this index are never directly shown to the
+        # agent but are used during evidence retrieval)
         self._start_report_index = None
 
-        # denotes if the action for evidence retrieval has been taken for the currently observed note,
-        # leave to the reset method to set this
+        # denotes if the action for evidence retrieval has been taken
+        # for the currently observed note, leave to the reset method to
+        # set this
         self._evidence_is_retrieved = None
 
-        # a running dictionary of dictionaries keeping track of retrieved evidence for each diagnosis for each report
+        # a running dictionary of dictionaries keeping track of
+        # retrieved evidence for each diagnosis for each report
         self._current_evidence = None
         self._current_cached_evidence = None
 
@@ -158,6 +200,21 @@ class EHRDiagnosisEnv(gym.Env):
         if self.fuzzy_matching_model is not None:
             self.fuzzy_matching_model.to(device)
 
+    def get_diagnosis_options_from_caches(self):
+        assert isinstance(self.add_diagnosis_options_from_caches, list)
+        additional_diagnosis_options = set()
+        for cache_path in self.add_diagnosis_options_from_caches:
+            extracted_information_cache = {}
+            update_cache_from_disk(
+                extracted_information_cache,
+                os.path.join(cache_path, 'extracted_info'))
+            extracted_information_cache = pd.DataFrame({
+                int(k): v for k, v in extracted_information_cache.items()
+            }).transpose()
+            for cds in extracted_information_cache['confident diagnoses']:
+                additional_diagnosis_options.update(*cds)
+        self.additional_diagnosis_options = additional_diagnosis_options
+
     def set_instances(self, instances, cache_path=None, subset=None):
         self._all_instances = instances
         self._index = None
@@ -182,9 +239,15 @@ class EHRDiagnosisEnv(gym.Env):
         if self.cache_path is not None:
             if not os.path.exists(self.cache_path):
                 os.mkdir(self.cache_path)
+            if not os.path.exists(os.path.join(
+                    self.cache_path, 'extracted_info')):
                 os.mkdir(os.path.join(self.cache_path, 'extracted_info'))
+            if not os.path.exists(os.path.join(
+                    self.cache_path, 'processed_extracted_info')):
                 os.mkdir(os.path.join(
                     self.cache_path, 'processed_extracted_info'))
+            if not os.path.exists(os.path.join(
+                    self.cache_path, 'evidence')):
                 os.mkdir(os.path.join(self.cache_path, 'evidence'))
             update_cache_from_disk(
                 self._extracted_information_cache,
@@ -213,7 +276,8 @@ class EHRDiagnosisEnv(gym.Env):
             int(k): v for k, v in
             self._processed_extracted_information_cache.items()
         }).transpose()
-        if self.skip_instances_with_gt_n_reports is not None:
+        if self.skip_instances_with_gt_n_reports is not None and \
+                len(processed_extracted_info) > 0:
             def modify_valid_timesteps(is_valid_timestep):
                 if is_valid_timestep is not None \
                         and is_valid_timestep == is_valid_timestep and \
@@ -233,85 +297,44 @@ class EHRDiagnosisEnv(gym.Env):
             ).sort_index()
         return df
 
-    def run_llm_extraction(
-            self, texts, query_names, postprocessing, replace_strings=None):
+    @property
+    def llm_model_type(self):
+        raise NotImplementedError
+
+    def run_llm_extraction(self, query_names, inputs):
+        # Here, inputs should be a list of dictionaries
+        # where each dictionary is a set of template_values
         assert self.model is not None
-        # replace strings could be a list of lists of string pairs (2-tuples)
-        # that need to be swapped out in the query for each query
-        processed_query_templates = []
-        for i, query_name in enumerate(query_names):
-            processed_query = queries[query_name]
-            if replace_strings is not None:
-                for s1, s2 in replace_strings[i]:
-                    processed_query = processed_query.replace(s1, s2)
-            processed_query_templates.append(processed_query)
-        all_outputs = []
-        all_confidences = []
+        assert len(query_names) > 0
+        assert len(query_names) == len(inputs)
+        queries = [
+            registered_queries[(self.llm_model_type, query_name)]
+            for query_name in query_names]
+        return_dicts = []
         for offset in range(0, len(query_names), self.llm_max_batch_size):
             slc = slice(offset, offset + self.llm_max_batch_size)
-            out = self.model.query(
-                tuple(texts[slc]),
-                tuple(processed_query_templates[slc]))
-            outputs = [output if func is None else func(output)
-                       for func, output in zip(
-                           postprocessing[slc], out['output'])]
-            all_confidences += out['confidence']
-            all_outputs += outputs
-        return {'output': all_outputs, 'confidence': all_confidences}
+            batched_queries = BatchedQueries(*queries[slc])
+            return_dicts += batched_queries(self.model, inputs[slc])
+        return {
+            k: [rd[k] for rd in return_dicts] for k in return_dicts[0].keys()}
+
+    def extract_info_from_report_row(self, row):
+        """
+        Should return a dictionary containing at least:
+        - differential diagnoses: set
+        - confident diagnoses: set
+        """
+        raise NotImplementedError
 
     def extract_info(self, reports):
-        extracted_information = {
-            'differential diagnoses': [],
-            'risk prediction': [],
-            'presenting complaint': [],
-            'differentials from complaint': [],
-            'confident diagnoses': [],
-        }
+        extracted_information = defaultdict(lambda : [])
         for i, row in self.progress_bar(
                 reports.iterrows(), total=len(reports),
                 desc='extracting information from reports'):
-            first_queries = [
-                'differential diagnoses', 'risk prediction',
-                'presenting complaint exists', 'confident diagnosis exists']
-            postprocessing = [
-                process_set_output, process_set_output, process_string_output,
-                process_string_output]
-            confident_diagnosis_text = confident_diagnosis_preprocessing(row.text)
-            texts = [
-                row.text, row.text, row.text, confident_diagnosis_text]
-            dd, rp, pce, cde = self.run_llm_extraction(
-                texts, first_queries, postprocessing)['output']
-            extracted_information['differential diagnoses'].append(dd)
-            extracted_information['risk prediction'].append(rp)
-            if pce == 'yes':
-                pc, = self.run_llm_extraction(
-                    [row.text], ['presenting complaint'], [None])['output']
-                extracted_information['presenting complaint'].append(
-                    process_string_output(pc))
-                dfc, = self.run_llm_extraction(
-                    [''],
-                    ['differentials from complaint'], [process_set_output],
-                    replace_strings=[[('<presenting complaint>', pc)]]
-                    )['output']
-                extracted_information['differentials from complaint'].append(
-                    dfc)
-            else:
-                extracted_information['presenting complaint'].append(None)
-                extracted_information['differentials from complaint'].append(
-                    set())
-            if cde == 'yes':
-                cd, = self.run_llm_extraction(
-                    [confident_diagnosis_text], ['confident diagnosis'],
-                    [None])['output']
-                cds, = self.run_llm_extraction(
-                    [''],
-                    ['confident diagnoses extracted'], [process_set_output],
-                    replace_strings=[[('<confident diagnosis>', cd)]]
-                    )['output']
-                extracted_information['confident diagnoses'].append(cds)
-            else:
-                extracted_information['confident diagnoses'].append(set())
-        return extracted_information
+            report_info = self.extract_info_from_report_row(row)
+            for k, v in report_info.items():
+                extracted_information[k].append(v)
+        return dict(extracted_information)
 
     def process_extracted_info(self, extracted_information):
         processed_extracted_info = {
@@ -344,12 +367,11 @@ class EHRDiagnosisEnv(gym.Env):
                 if target not in confident_diagnosis_timepoints.keys():
                     confident_diagnosis_timepoints[target] = i
         all_targets = set().union(*confident_diagnoses)
-        # TODO: add differentials from presenting complaint
         # initially set to the union of all confident diagnoses that emerge in the episode
         num_reports = len(next(iter(extracted_information.values())))
         for i in range(num_reports):
             differential_diagnoses = extracted_information['differential diagnoses'][i]
-            risks = extracted_information['risk prediction'][i]
+            # risks = extracted_information['risk prediction'][i]
             # keep a running list of confident diagnoses seen up to and including the current time-points
             previous_past_targets = set() \
                 if len(processed_extracted_info['past target diagnoses']) == 0 else \
@@ -366,13 +388,14 @@ class EHRDiagnosisEnv(gym.Env):
                 for t in processed_extracted_info['target diagnoses'][-1]})
             # keep a running list of potential diagnoses by combining differentials and risks
             if self.limit_options_with_llm:
-                new_potential_diagnoses = differential_diagnoses.union(risks)
+                # new_potential_diagnoses = differential_diagnoses.union(risks)
+                new_potential_diagnoses = set(differential_diagnoses)
                 if self.match_potential_diagnoses:
                     new_potential_diagnoses = self.get_matched_diagnoses(new_potential_diagnoses, self.all_reference_diagnoses)
                 if self.include_alternative_diagnoses:
                     # if including alternatives, expand the list by adding anything that appears in the same line (in the
                     # alternatives) as something that matched
-                    matched_diagnoses = new_potential_diagnoses if self.match_potential_diagnoses else \
+                    matched_diagnoses = new_potential_diagnoses if not self.match_potential_diagnoses else \
                         self.get_matched_diagnoses(new_potential_diagnoses, self.all_reference_diagnoses)
                     alternative_diagnoses = self.get_alternative_diagnoses(matched_diagnoses)
                     new_potential_diagnoses = new_potential_diagnoses.union(alternative_diagnoses)
@@ -523,28 +546,37 @@ class EHRDiagnosisEnv(gym.Env):
         return set(all_alternatives)
 
     @property
-    def _current_options(self):
+    def _current_option_info(self):
         options = []
+        option_types = []
         options += self._extracted_information[
             'potential diagnoses'][self._current_report_index]
-        if not self._evidence_is_retrieved and self.add_risk_factor_queries:
-            options += self._extracted_information[
-                'risk factors'][self._current_report_index]
-        if self._evidence_is_retrieved and self.add_none_of_the_above_option:
-            options += ['None of the Above']
-        return options
-
-    @property
-    def _current_option_types(self):
-        option_types = []
         option_types += ['diagnosis'] * len(self._extracted_information[
             'potential diagnoses'][self._current_report_index])
         if not self._evidence_is_retrieved and self.add_risk_factor_queries:
+            options += self._extracted_information[
+                'risk factors'][self._current_report_index]
             option_types += ['risk factor'] * len(self._extracted_information[
                 'risk factors'][self._current_report_index])
-        if self._evidence_is_retrieved and self.add_none_of_the_above_option:
-            option_types += ['diagnosis']
-        return option_types
+        if self._evidence_is_retrieved:
+            if self.additional_diagnosis_options is not None:
+                ados = [
+                    x for x in self.additional_diagnosis_options
+                    if x not in options]
+                options += ados
+                option_types += ['diagnosis'] * len(ados)
+            if self.add_none_of_the_above_option:
+                options += ['None of the Above']
+                option_types += ['diagnosis']
+        return options, option_types
+
+    @property
+    def _current_options(self):
+        return self._current_option_info[0]
+
+    @property
+    def _current_option_types(self):
+        return self._current_option_info[1]
 
     @property
     def _current_targets(self):
@@ -794,17 +826,15 @@ class EHRDiagnosisEnv(gym.Env):
                     query_terms_temp.append(('evidence via rf exists', q, t))
             if len(query_terms_temp) == 0:
                 continue
-            texts = [report_row.text] * len(query_terms_temp)
             evidence_exists_outs = self.run_llm_extraction(
-                texts, [template for template, _, _ in query_terms_temp],
-                [process_string_output] * len(query_terms_temp),
-                replace_strings=[
-                    [('<query>', q)] for _, q, _ in query_terms_temp],)
+                [template for template, _, _ in query_terms_temp],
+                [{'input': report_row.text, 'query': q}
+                 for _, q, _ in query_terms_temp])
             query_terms_temp2 = []
             for (template, q, t), evidence_exists_out, confidence in zip(
-                    query_terms_temp, evidence_exists_outs['output'],
+                    query_terms_temp, evidence_exists_outs['processed_output'],
                     evidence_exists_outs['confidence']):
-                if evidence_exists_out == 'yes':
+                if evidence_exists_out:
                     query_terms_temp2.append((
                         ' '.join(template.split()[:-1] + ['retrieval']), q, t))
                 else:
@@ -814,14 +844,12 @@ class EHRDiagnosisEnv(gym.Env):
                         (q, t), i, 'no evidence found', confidence)
             if len(query_terms_temp2) == 0:
                 continue
-            texts = [report_row.text] * len(query_terms_temp2)
             evidence_outs = self.run_llm_extraction(
-                texts, [template for template, _, _ in query_terms_temp2],
-                [None] * len(query_terms_temp2),
-                replace_strings=[
-                    [('<query>', q)] for _, q, t in query_terms_temp2],)
+                [template for template, _, _ in query_terms_temp2],
+                [{'input': report_row.text, 'query': q}
+                 for _, q, _ in query_terms_temp2])
             for (template, q, t), evidence, confidence in zip(
-                    query_terms_temp2, evidence_outs['output'],
+                    query_terms_temp2, evidence_outs['processed_output'],
                     evidence_outs['confidence']):
                 evidence_prefix = 'Signs: ' \
                     if template == 'evidence has condition retrieval' else ''

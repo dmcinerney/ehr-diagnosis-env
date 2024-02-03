@@ -1,6 +1,9 @@
-from operator import contains
-from .model_interface import *
-from .queries import *
+from .llm_queries.model_interface import get_model_interface
+from .llm_queries.query import registered_queries
+# you don't use this import, but it registers these queries
+from .llm_queries.mistral_queries import *
+from .llm_queries.flan_queries import *
+from .llm_queries.alpacare_queries import *
 import os
 import pickle as pkl
 from tqdm import tqdm
