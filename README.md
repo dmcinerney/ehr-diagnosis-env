@@ -1,4 +1,4 @@
-# ehr-diagnosis-env
+# EHR Diagnosis Environment
 This repository contains a gym environment for a diagnosis risk prediction task that uses information extracted from EHRs as observations and to evaluate reward. An example of usage and training an agent can be seen here:
 
 https://github.com/dmcinerney/ehr-diagnosis-agent
