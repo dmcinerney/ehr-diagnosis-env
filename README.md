@@ -1,7 +1,18 @@
 # ehr-diagnosis-env
-A gym environment for diagnosis that uses information extracted EHRs as observations.
+This repository contains a gym environment for a diagnosis risk prediction task that uses information extracted from EHRs as observations and to evaluate reward. An example of usage and training an agent can be seen here:
 
-Pseudo-code:
+https://github.com/dmcinerney/ehr-diagnosis-agent
+
+This example repository also contains code for preprocessing MIMIC-III (https://physionet.org/content/mimiciii/1.4/) into the correct format for this environment and it can be easily extended to other EHR sources.
+
+This environment as well as any trained agents can also be visualized using the interface here:
+
+https://github.com/dmcinerney/ehr-diagnosis-env-interface
+
+Paper and Detailed usage instructions coming soon.
+
+
+### Pseudo-code
 ```
 Step 1: extract risk factors/differential diagnoses from all reports, extract confident diagnoses from all reports
 
@@ -20,8 +31,5 @@ Reward function for one timestep =
 		}
 ```
 
-TODO: Add support for entering custom diagnoses/weights as part of the evidence retrieval action to append to the automatically extracted ones
-
 TODO: Add dummy data for example.
 
-TODO: Add example code for preprocessing mimic into the correct format and allow use of this in example.
