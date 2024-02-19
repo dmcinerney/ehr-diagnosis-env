@@ -851,7 +851,6 @@ class EHRDiagnosisEnv(gym.Env):
             for q, t in zip(query_terms, types):
                 if i in self._current_evidence[(q, t)].keys():
                     continue
-                import pdb; pdb.set_trace()
                 if t == 'diagnosis':
                     query_terms_temp.append(('evidence exists', q, t))
                     query_terms_temp.append(
