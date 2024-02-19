@@ -1,8 +1,5 @@
 from .postprocessing import *
 from .query import *
-from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained('mistralai/Mistral-7B-Instruct-v0.2')
-parenthesis_ids = tokenizer([' ('], add_special_tokens=False).input_ids
 
 
 # def mistral_confident_diagnoses(yaml_output):
@@ -56,7 +53,6 @@ parenthesis_ids = tokenizer([' ('], add_special_tokens=False).input_ids
 #     generation_kwargs={'max_new_tokens': 256})
 
 
-
 def mistral_confident_diagnoses(yaml_output):
     if yaml_output is None or not isinstance(yaml_output, list):
         return set()
@@ -67,7 +63,7 @@ def mistral_confident_diagnoses(yaml_output):
         diagnosis, confidence = next(iter(x.items()))
         if isinstance(diagnosis, str) and isinstance(confidence, str) and \
                 confidence.lower().strip() in ['definite', 'certain']:
-            definite_diagnoses.add(diagnosis.lower().strip())
+            definite_diagnoses.add(diagnosis.split('(')[0].lower().strip())
     return definite_diagnoses
 def mistral_unconfident_diagnoses(yaml_output):
     if yaml_output is None or not isinstance(yaml_output, list):
@@ -79,13 +75,13 @@ def mistral_unconfident_diagnoses(yaml_output):
         diagnosis, confidence = next(iter(x.items()))
         if isinstance(diagnosis, str) and isinstance(confidence, str) and \
                 not confidence.lower().strip() in ['definite', 'certain']:
-            unconfident_diagnoses.add(diagnosis.lower().strip())
+            unconfident_diagnoses.add(diagnosis.split('(')[0].lower().strip())
     return unconfident_diagnoses
 prompt = """<s>[INST] Here is a report from a patient's medical record:
 
 <input>
 
-Provide a concise list of the diagnoses (e.g. pneumonia, pulmonary edema, lung cancer, etc.) and their corresponding certainty (e.g. uncertain, low, medium, high, definite) in a valid yaml format.
+Provide a concise list of the high-level diagnoses (e.g. pneumonia, congestive heart failure, lung cancer, etc.) and their corresponding certainty (e.g. uncertain, low, medium, high, definite) in a valid yaml format. Please exclude any negated diagnoses.
 
 Format example:
 ```yaml
@@ -95,9 +91,7 @@ Format example:
 ``` [/INST] """
 registered_queries[('mistral', 'diagnoses')] = Query(
     prompt, truncation_index=prompt.index('<input>') + len('<input>'),
-    generation_kwargs={
-        'max_new_tokens': 256,
-        'bad_word_ids': parenthesis_ids}) # not sure bad_word_ids is actually working
+    generation_kwargs={'bad_words': [' (']}) # not sure bad_word_ids is actually working
 
 
 def mistral_differentials(yaml_output):
@@ -106,9 +100,10 @@ def mistral_differentials(yaml_output):
     differentials = set()
     for x in yaml_output:
         if isinstance(x, str):
-            differentials.add(x)
+            differentials.add(x.split('(')[0].strip().lower())
         elif isinstance(x, dict) and len(x) == 1:
-            differentials.add(next(iter(x.keys())))
+            differentials.add(
+                next(iter(x.keys())).split('(')[0].strip().lower())
     return differentials
 prompt = """<s>[INST] Here is a report from a patient's medical record:
 
@@ -126,9 +121,7 @@ registered_queries[('mistral', 'differentials')] = Query(
     prompt, postprocessing=lambda rd, gk: mistral_differentials(
         yaml_postprocess(truncate_if_ends_early(rd))),
     truncation_index=prompt.index('<input>') + len('<input>'),
-    generation_kwargs={
-        'max_new_tokens': 256,
-        'bad_word_ids': parenthesis_ids})
+    generation_kwargs={'bad_words': [' (']})
 
 
 
@@ -145,7 +138,8 @@ Question: Is the patient at risk of <query>? Choice: -Yes -No
 Answer: [/INST] """
 registered_queries[('mistral', 'evidence exists')] = Query(
     prompt, postprocessing=lambda rd, gk: process_yes_no_output(rd['output']),
-    truncation_index=prompt.index('<input>') + len('<input>'))
+    truncation_index=prompt.index('<input>') + len('<input>'),
+    generation_kwargs={'max_new_tokens': 4})
 
 
 prompt = """<s>[INST] Read the following clinical note of a patient:
@@ -167,7 +161,8 @@ Question: Does the patient have <query>? Choice: -Yes -No
 Answer: [/INST] """
 registered_queries[('mistral', 'evidence has condition exists')] = Query(
     prompt, postprocessing=lambda rd, gk: process_yes_no_output(rd['output']),
-    truncation_index=prompt.index('<input>') + len('<input>'))
+    truncation_index=prompt.index('<input>') + len('<input>'),
+    generation_kwargs={'max_new_tokens': 4})
 
 
 prompt = """<s>[INST] Read the following clinical note of a patient:
@@ -189,7 +184,8 @@ Question: Does the patient have <query>? Choice: -Yes -No
 Answer: [/INST] """
 registered_queries[('mistral', 'evidence via rf exists')] = Query(
     prompt, postprocessing=lambda rd, gk: process_yes_no_output(rd['output']),
-    truncation_index=prompt.index('<input>') + len('<input>'))
+    truncation_index=prompt.index('<input>') + len('<input>'),
+    generation_kwargs={'max_new_tokens': 4})
 
 
 prompt = """<s>[INST] Read the following report:

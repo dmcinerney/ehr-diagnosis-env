@@ -1,10 +1,11 @@
 class Query:
     def __init__(self, template, postprocessing=None, truncation_index=None,
-                 **generation_kwargs):
+                 generation_kwargs=None):
         self.template = template
         self.postprocessing = postprocessing
         self.truncation_index = truncation_index
-        self.generation_kwargs = generation_kwargs
+        self.generation_kwargs = {} if generation_kwargs is None else \
+            generation_kwargs
 
     def get_inputs(self, **template_values):
         if self.truncation_index is None:
@@ -36,13 +37,18 @@ class Query:
     def __call__(self, model_interface, **template_values):
         input_text, only_truncate_prefix = self.get_inputs(**template_values)
         return_dict = model_interface.query(
-            [input_text], only_truncate_prefix=[only_truncate_prefix])
+            [input_text], only_truncate_prefix=[only_truncate_prefix],
+            **self.generation_kwargs)
         return self.get_outputs(return_dict, 0)
 
 
 class BatchedQueries:
     def __init__(self, *queries):
         self.queries = queries
+        assert len(self.queries) > 0
+        # TODO: check if the generation kwargs line up! If they don't,
+        #   the model will currently generate according to the first queries
+        #   generation kwargs
 
     def __call__(self, model_interface, inputs):
         # Here, inputs should be a list of dictionaries
@@ -54,7 +60,8 @@ class BatchedQueries:
             input_texts.append(input_text)
             only_truncate_prefixes.append(only_truncate_prefix)
         return_dict = model_interface.query(
-            input_texts, only_truncate_prefixes)
+            input_texts, only_truncate_prefix=only_truncate_prefixes,
+            **self.queries[0].generation_kwargs)
         return [
             q.get_outputs(return_dict, i) for i, q in enumerate(self.queries)]
 

@@ -10,12 +10,15 @@ class ModelInterface:
         self.model.eval()
         self.default_generation_kwargs = {"max_new_tokens": 64}
 
+    def to(self, device):
+        self.model.to(device)
+
     def get_tokenizer(self, model_name):
         return AutoTokenizer.from_pretrained(model_name)
 
     def get_model(self, model_name):
         return AutoModelForCausalLM.from_pretrained(
-            model_name, device_map="auto", torch_dtype=torch.float16)
+            model_name, device_map="auto", torch_dtype=torch.bfloat16)
 
     def format_for_generation(self, prompts, only_truncate_prefix=None):
         return prompts, only_truncate_prefix
@@ -25,10 +28,17 @@ class ModelInterface:
         gen_kwargs = {}
         gen_kwargs.update(self.default_generation_kwargs)
         gen_kwargs.update(generation_kwargs)
+        if 'bad_words' in gen_kwargs.keys():
+            assert 'bad_words_ids' not in gen_kwargs.keys()
+            gen_kwargs['bad_words_ids'] = self.tokenizer(
+                gen_kwargs['bad_words'], add_special_tokens=False).input_ids
+            del gen_kwargs['bad_words']
         if only_truncate_prefix is None:
             tokenized_input = self.tokenizer(
                 prompts, return_tensors="pt", padding=True, truncation=True)
         else:
+            assert isinstance(only_truncate_prefix, list)
+            assert len(only_truncate_prefix) == len(prompts)
             prompts1 = [
                 prompt[:i] for prompt, i in zip(prompts, only_truncate_prefix)]
             prompts2 = [
@@ -92,8 +102,12 @@ class T5(ModelInterface):
         return super().get_output(input_ids, outputs, decoder_only=False)
 
     def get_model(self, model_name):
-        return T5ForConditionalGeneration.from_pretrained(
-            model_name, device_map="auto", torch_dtype=torch.float16)
+        if torch.cuda.is_available():
+            return T5ForConditionalGeneration.from_pretrained(
+                model_name, device_map="auto", torch_dtype=torch.float16)
+        else:
+            return T5ForConditionalGeneration.from_pretrained(
+                model_name, device_map="auto")
 
 
 INSTRUCTION_KEY = "### Instruction:"
@@ -169,12 +183,14 @@ class Alpaca(MPT):
 class Mistral(ModelInterface):
     def __init__(self, model_name):
         super().__init__(model_name)
-        self.default_generation_kwargs = {"max_new_tokens": 512}
+        self.default_generation_kwargs[
+            "pad_token_id"] = self.tokenizer.pad_token_id
     def get_tokenizer(self, model_name):
         tokenizer = super().get_tokenizer(model_name)
         tokenizer.pad_token_id = tokenizer.eos_token_id
-        tokenizer.model_max_length = \
-            AutoConfig.from_pretrained(model_name).max_position_embeddings
+        # tokenizer.model_max_length = \
+        #     AutoConfig.from_pretrained(model_name).max_position_embeddings
+        tokenizer.model_max_length = 2000
         return tokenizer
 
 
@@ -183,15 +199,16 @@ class AlpaCare(ModelInterface):
 
 
 def get_model_interface(model_name):
-    if model_name == 'google/flan-t5-xxl':
+    if 'flan-t5' in model_name:
         return T5(model_name)
-    elif model_name == 'mosaicml/mpt-7b-instruct':
+    elif 'mpt-' in model_name:
         return MPT(model_name)
-    elif model_name in ['alpaca-7b']:
+    elif 'alpaca-' in model_name:
         return Alpaca(model_name)
-    elif model_name.startswith('mistralai/Mistral-'):
+    # elif model_name.startswith('mistralai/Mistral-'):
+    elif 'mistralai' in model_name:
         return Mistral(model_name)
-    elif model_name.startswith('xz97/AlpaCare-'):
+    elif 'AlpaCare-' in model_name:
         return AlpaCare(model_name)
     else:
         raise NotImplementedError
